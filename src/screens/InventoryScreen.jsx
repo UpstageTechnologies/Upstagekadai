@@ -6,7 +6,9 @@ import { collection, onSnapshot, doc, deleteDoc, updateDoc } from "firebase/fire
 import { getSession } from "../../utils/session";
 import { useTheme } from "../theme/ThemeContext";
 import { launchImageLibrary } from "react-native-image-picker";
-
+// மேலே உள்ள இம்போர்ட்டுகளுடன் இதையும் சேர்த்துக்கொள்ளுங்கள்
+import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { storage } from "../firebaseConfig";
 export default function InventoryScreen({ appMode }) {
   const { theme, darkMode } = useTheme();
   const isFocused = useIsFocused(); 
@@ -62,13 +64,18 @@ export default function InventoryScreen({ appMode }) {
     setModalVisible(true);
     setEditImage(item.image || "");
   };
-
-  const saveEdit = async () => {
+const saveEdit = async () => {
     const user = auth.currentUser;
     if (!user || !selectedItem) return;
     const collectionName = currentMode === "global" ? "global_inventory" : "inventory";
 
     try {
+      // ✨ புது மாற்றம்: இமேஜை Firebase Storage-ல் அப்லோட் செய்து ஆன்லைன் URL பெறுதல்
+      let finalImageUrl = selectedItem.image || "";
+      if (editImage) {
+        finalImageUrl = await uploadImageToStorage(editImage);
+      }
+
       await updateDoc(
         doc(db, "users", user.uid, collectionName, selectedItem.id),
         {
@@ -76,7 +83,7 @@ export default function InventoryScreen({ appMode }) {
           purchasePrice: Number(editPurchasePrice),
           salesPrice: Number(editSalesPrice),
           quantity: Number(editQty),
-          image: editImage
+          image: finalImageUrl // ஆன்லைன் URL சேமிக்கப்படும்
         }
       );
       setModalVisible(false);
@@ -109,6 +116,26 @@ export default function InventoryScreen({ appMode }) {
       (item.category || "").toLowerCase().includes(q)
     );
   });
+  const uploadImageToStorage = async (localUri) => {
+    // இமேஜ் ஏற்கனவே ஆன்லைன் URL ஆக இருந்தால் (http...) அப்லோட் செய்யத் தேவையில்லை
+    if (!localUri || localUri.startsWith("http")) return localUri;
+
+    try {
+      const response = await fetch(localUri);
+      const blob = await response.blob();
+
+      const filename = `products/${auth.currentUser.uid}_${Date.now()}.jpg`;
+      const storageRef = ref(storage, filename);
+
+      const uploadTask = await uploadBytesResumable(storageRef, blob);
+      const downloadUrl = await getDownloadURL(uploadTask.ref);
+      return downloadUrl;
+    } catch (error) {
+      console.log("Image upload error: ", error);
+      Alert.alert("Upload Failed", "Stated using local URI due to error.");
+      return localUri;
+    }
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>

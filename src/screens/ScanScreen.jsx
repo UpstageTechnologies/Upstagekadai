@@ -10,7 +10,10 @@ import { Camera, useCameraDevice, useCodeScanner } from "react-native-vision-cam
 
 import { auth, db } from "../firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-
+import {launchImageLibrary} from 'react-native-image-picker';
+import { Image } from "react-native"; // Image component-a import pannunga
+import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { storage } from "../firebaseConfig"; // storage-ஐ இம்போர்ட் செய்யுங்க
 const { width } = Dimensions.get("window");
 
 export default function ScanScreen({ navigation }) {
@@ -44,18 +47,51 @@ export default function ScanScreen({ navigation }) {
   const [categoryName, setCategoryName] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   
-  // 🌟 பிக்ஸ்: பர்ச்சேஸ் ரசீதை ஸ்க்ரீனில் பார்க்க உதவும் ஸ்டேட்கள்
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [currentPurNo, setCurrentPurNo] = useState("");
   const [currentPurDate, setCurrentPurDate] = useState("");
   const [purTotal, setPurTotal] = useState(0);
-
+  const [showMore, setShowMore] = useState(false);
   const scanLockRef = useRef(false);
 
-  useEffect(() => {
-    (async () => {
-      await Camera.requestCameraPermission();
-    })();
+const uploadImageToStorage = async (localUri) => {
+  if (!localUri || localUri.startsWith("http")) return localUri; // ஏற்கனவே ஆன்லைன் URL ஆக இருந்தால் அப்படியே அனுப்பும்
+
+  try {
+    // 1. Local URI-ஐ Blob ஆக மாற்ற வேண்டும் (Android/iOS இரண்டிற்கும் பொருந்தும்)
+    const response = await fetch(localUri);
+    const blob = await response.blob();
+
+    // 2. Storage-ல் தனித்துவமான கோப்பு பெயரை உருவாக்குதல்
+    const filename = `products/${auth.currentUser.uid}_${Date.now()}.jpg`;
+    const storageRef = ref(storage, filename);
+
+    // 3. அப்லோட் செய்தல்
+    const uploadTask = await uploadBytesResumable(storageRef, blob);
+    
+    // 4. பதிவிறக்கக்கூடிய பொது URL-ஐப் பெறுதல் (Download URL)
+    const downloadUrl = await getDownloadURL(uploadTask.ref);
+    return downloadUrl;
+  } catch (error) {
+    console.log("Image upload error: ", error);
+    Alert.alert("Error", "Image upload failed. Storing local image instead.");
+    return localUri;
+  }
+};
+useEffect(() => {
+    // Delay the permission request slightly to ensure the Android Activity is fully ready
+    const timer = setTimeout(async () => {
+      try {
+        const status = await Camera.getCameraPermissionStatus();
+        if (status !== 'granted') {
+          await Camera.requestCameraPermission();
+        }
+      } catch (error) {
+        console.log("Permission error:", error);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -148,7 +184,6 @@ export default function ScanScreen({ navigation }) {
     );
   };
 
-  // 🌟 பிக்ஸ்: பர்ச்சேஸ் பில் பிரிண்ட் டிசைன் Sales பில் டிசைன் போல மாற்றப்பட்டுள்ளது
   const triggerPurchasePrint = async (purNo, purDate, totalAmt) => {
     const supName = supplierName || bill[0]?.supplierName || "Walk-in Supplier";
     const html = `
@@ -317,19 +352,49 @@ export default function ScanScreen({ navigation }) {
     }
   });
 
-  const handleAddOrUpdateProduct = async () => {
+const pickImage = () => {
+  launchImageLibrary(
+    {
+      mediaType: 'photo',
+      quality: 0.8,
+      includeBase64: false,
+    },
+    (response) => {
+      if (response.didCancel) return;
+
+      if (response.errorCode) {
+        Alert.alert("Image Error", response.errorMessage);
+        return;
+      }
+
+      if (response.assets && response.assets.length > 0) {
+        setEditImage(response.assets[0].uri);
+      }
+    },
+  );
+};
+const handleAddOrUpdateProduct = async () => {
     if (!user || !tempProduct) return;
     const finalName = editName || tempProduct.name || "New Product";
     const finalPrice = Number(purchasePrice) > 0 ? Number(purchasePrice) : Number(tempProduct.purchasePrice || 0);
     const finalSalesPrice = Number(salesPrice) || 0;
     const finalQty = Number(editQty) || 1;
+    const finalBrand = editBrand || tempProduct.brand || "";
+    
+    // ✨ புது மாற்றம்: இமேஜை Firebase Storage-ல் பதிவேற்றி ஆன்லைன் URL பெறுதல்
+    let finalImage = tempProduct.image || "";
+    if (editImage) {
+      finalImage = await uploadImageToStorage(editImage);
+    }
 
     try {
+      let productId = tempProduct?.id;
+      
       if (tempProduct?.id && tempProduct.id.length > 10 && !tempProduct.id.startsWith("NO-BARCODE-")) {
         await updateDoc(doc(db, "users", user.uid, inventoryCollection, tempProduct.id), {
           itemName: finalName,
-          brand: editBrand || tempProduct.brand || "",
-          image: editImage || tempProduct.image || "",
+          brand: finalBrand,
+          image: finalImage, // ஆன்லைன் URL சேமிக்கப்படும்
           purchasePrice: finalPrice,
           salesPrice: finalSalesPrice,
           quantity: finalQty,
@@ -338,11 +403,11 @@ export default function ScanScreen({ navigation }) {
           supplierName: supplierName
         });
       } else {
-        await addDoc(collection(db, "users", user.uid, inventoryCollection), {
+        const docRef = await addDoc(collection(db, "users", user.uid, inventoryCollection), {
           barcode: tempProduct.barcode,
           itemName: finalName,
-          brand: editBrand || tempProduct.brand || "",
-          image: editImage || tempProduct.image || "",
+          brand: finalBrand,
+          image: finalImage, // ஆன்லைன் URL சேமிக்கப்படும்
           purchasePrice: finalPrice,
           salesPrice: finalSalesPrice,
           quantity: finalQty,
@@ -351,31 +416,35 @@ export default function ScanScreen({ navigation }) {
           supplierName: supplierName,
           createdAt: serverTimestamp()
         });
+        productId = docRef.id;
       }
 
-      setScannedList(prev => prev.map(i => i.barcode === tempProduct.barcode ? { ...i, name: finalName, purchasePrice: finalPrice } : i));
-      setBill(prev => {
-        const exist = prev.find(i => i.barcode === tempProduct.barcode && i.purchasePrice === finalPrice);
-        if (exist) { return prev.map(i => i.barcode === tempProduct.barcode ? { ...i, name: finalName, purchasePrice: finalPrice, qty: i.qty + finalQty } : i); }
-        return [...prev, {
-          barcode: tempProduct.barcode,
-          name: finalName,
-          qty: finalQty,
-          purchasePrice: finalPrice,
-          salesPrice: finalSalesPrice,
-          brand: editBrand || "",
-          image: editImage || "",
-          category: selectedCategory || "",
-          unitType: unitType,
-          supplierName: supplierName,
-        }];
+      const newItemForList = {
+        id: productId,
+        name: finalName,
+        brand: finalBrand,
+        image: finalImage,
+        barcode: tempProduct.barcode,
+        purchasePrice: finalPrice,
+        salesPrice: finalSalesPrice,
+        qty: finalQty,
+        category: selectedCategory,
+        unitType: unitType,
+      };
+
+      setScannedList(prev => {
+        const exist = prev.find(i => i.barcode === tempProduct.barcode);
+        if (exist) {
+          return prev.map(i => i.barcode === tempProduct.barcode ? { ...i, ...newItemForList, qty: i.qty + finalQty } : i);
+        }
+        return [...prev, newItemForList];
       });
 
       setModalVisible(false);
       setTempProduct(null); setEditName(""); setEditBrand(""); setEditImage(""); setPurchasePrice(""); setSalesPrice(""); setEditQty("1"); setSelectedCategory("");
     } catch (error) { Alert.alert("Error", error.message); }
   };
-
+  
   const handleAddAllItems = async () => {
     if (scannedList.length === 0) return;
     setAddingAll(true);
@@ -421,7 +490,6 @@ export default function ScanScreen({ navigation }) {
     setTimeout(() => { setSuccessVisible(false); }, 1800);
   };
 
-  // 🌟 பிக்ஸ்: தேர்ந்தெடுக்கப்பட்ட கேட்டகிரியை கொண்டு பர்ச்சேஸ் மாடல் பொருட்களை பில்டர் செய்கிறது
   const filteredCategoryProducts = items.filter(item => {
     const matchesCategory = selectedCategory ? (item.category === selectedCategory) : true;
     const matchesSearch = (item.itemName || "").toLowerCase().includes(editName.toLowerCase());
@@ -471,12 +539,6 @@ export default function ScanScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
-        {scannedList.length > 0 && (
-          <TouchableOpacity onPress={handleAddAllItems} style={{ backgroundColor:"#16a34a", padding:14, borderRadius:12, marginBottom:10, alignItems:"center" }}>
-              <Text style={{ color:"#fff", fontWeight:"bold", fontSize:16 }}>➕ Add ({scannedList.length}) Items</Text>
-          </TouchableOpacity>
-        )}
-
         <ScrollView>
           {searchText.trim().length > 0 ? (
             filteredItems.map((item) => (
@@ -488,26 +550,33 @@ export default function ScanScreen({ navigation }) {
           ) : (
             scannedList.map((item) => (
               <View key={item.barcode} style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#1e293b", padding: 10, borderRadius: 12, marginBottom: 8 }}>
-                <Text style={{ color: "#fff", flex: 1 }}>{item.name}</Text>
+                <Text style={{ color: "#fff", flex: 1 }}>{item.name} (x{item.qty || 1})</Text>
                 <TouchableOpacity onPress={() => { setScannedList(prev => prev.filter(i => i.barcode !== item.barcode)); }} style={{ backgroundColor: "#ef4444", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, marginRight: 8 }}>
                   <Text style={{ color: "#fff" }}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => {
                     setTempProduct(item);
-                    setEditName(item.name || ""); setEditBrand(item.brand || ""); setEditImage(item.image || ""); setPurchasePrice(String(item.purchasePrice || "")); setSalesPrice(""); setEditQty("1"); setSelectedCategory("");
+                    setEditName(item.name || ""); setEditBrand(item.brand || ""); setEditImage(item.image || ""); setPurchasePrice(String(item.purchasePrice || "")); setSalesPrice(String(item.salesPrice || "")); setEditQty(String(item.qty || "1")); setSelectedCategory(item.category || "");
                     setModalVisible(true);
                   }}
                   style={{ backgroundColor: "#22c55e", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 }}
                 >
-                  <Text style={{ color: "#fff" }}>Add</Text>
+                  <Text style={{ color: "#fff" }}>Edit</Text>
                 </TouchableOpacity>
               </View>
             ))
           )}
         </ScrollView>
 
-        <View style={{ marginTop: 10, backgroundColor: "#0f172a", padding: 10, borderRadius: 10 }}>
+        {/* 🌟 பிக்ஸ்: "Add Items" பொத்தான் பொருட்களின் லிஸ்ட்டிற்கு கீழே கொண்டு வரப்பட்டுள்ளது */}
+        {scannedList.length > 0 && (
+          <TouchableOpacity onPress={handleAddAllItems} style={{ backgroundColor:"#16a34a", padding:14, borderRadius:12, marginVertical:10, alignItems:"center" }}>
+              <Text style={{ color:"#fff", fontWeight:"bold", fontSize:16 }}>➕ Add ({scannedList.reduce((acc, curr) => acc + (curr.qty || 1), 0)}) Items</Text>
+          </TouchableOpacity>
+        )}
+
+        <View style={{ marginTop: 5, backgroundColor: "#0f172a", padding: 10, borderRadius: 10 }}>
           <Text style={{ color: "#fff", fontSize: 16 }}>🧾 Bill ({currentMode.toUpperCase()})</Text>
           {bill.map((item) => (
             <View key={item.barcode} style={{ flexDirection: "row", justifyContent: "space-between", marginVertical: 4 }}>
@@ -522,7 +591,6 @@ export default function ScanScreen({ navigation }) {
         </View>
       </View>
 
-      {/* 🌟 பிக்ஸ்: பர்ச்சேஸ் ரசீது பார்க்க Sales Screen போன்ற WebView மாடல் சேர்க்கப்பட்டுள்ளது */}
       <Modal visible={showReceiptModal} animationType="slide" transparent={false}>
         <View style={styles.modalReceiptContainer}>
           <Text style={styles.zoomTipText}>💡 Use two fingers to Zoom In/Out (Pinch)</Text>
@@ -610,10 +678,70 @@ export default function ScanScreen({ navigation }) {
                 <Text style={{ color: "#2563eb", fontWeight: "600" }}>+ Add / Manage Categories</Text>
               </TouchableOpacity>
 
-              <TextInput placeholder="Supplier Name" placeholderTextColor="#64748b" value={supplierName} onChangeText={setSupplierName} style={styles.input} />
-              <TextInput placeholder="Product Name" placeholderTextColor="#64748b" value={editName} style={styles.input} onChangeText={(text) => { setEditName(text); setShowDropdown(true); }} />
+              {/* 🌟 Image Picker Preview */}
+                <Text style={{ marginTop: 15, fontWeight: "600" }}>Product Image</Text>
+                <TouchableOpacity 
+                  onPress={pickImage} 
+                  style={{ 
+                    marginTop: 10, 
+                    height: 120, 
+                    width: 120, 
+                    borderRadius: 15, 
+                    backgroundColor: "#e2e8f0", 
+                    justifyContent: "center", 
+                    alignItems: "center",
+                    alignSelf: "center",
+                    borderWidth: 2,
+                    borderColor: "#cbd5e1",
+                    borderStyle: "dashed"
+                  }}
+                >
+                  {editImage ? (
+                    <Image source={{ uri: editImage }} style={{ width: "100%", height: "100%", borderRadius: 13 }} />
+                  ) : (
+                    <Text style={{ color: "#64748b" }}>+ Add Image</Text>
+                  )}
+                </TouchableOpacity>
+                <TextInput placeholder="Supplier Name" placeholderTextColor="#64748b" value={supplierName} onChangeText={setSupplierName} style={styles.input} />
+                <TextInput placeholder="Product Name" placeholderTextColor="#64748b" value={editName} style={styles.input} onChangeText={(text) => { setEditName(text); setShowDropdown(true); }} />
+                <TextInput placeholder="Purchase Price" placeholderTextColor="#64748b" keyboardType="numeric" value={purchasePrice} onChangeText={setPurchasePrice} style={styles.input} />
 
-              {/* 🌟 பிக்ஸ்: பர்ச்சேஸ் மேனுவல் மாடலிலும் கேட்டகிரிக்கு தகுந்த தயாரிப்புகள் மட்டுமே டிராப்டவுனில் வரும் */}
+              <TouchableOpacity onPress={() => setShowMore(!showMore)} style={{ marginTop:12, marginBottom:10, alignItems:"center" }}>
+                  <Text style={{ color:"#2563eb", fontWeight:"700", fontSize:15 }}>
+                      {showMore ? "▲ Less Options" : "▼ More Options"}
+                  </Text>
+              </TouchableOpacity>
+
+              {showMore && (
+                <>
+                  <TextInput placeholder="Brand Name" placeholderTextColor="#64748b" value={editBrand} onChangeText={setEditBrand} style={styles.input} />
+                  
+                  {/* 🌟 பிக்ஸ்: பாப்-அப் மாடலில் Product Image URL சேர்க்க TextInput செட் செய்யப்பட்டுள்ளது */}
+
+                  <TextInput placeholder="Sales Price" placeholderTextColor="#64748b" keyboardType="numeric" value={salesPrice} onChangeText={setSalesPrice} style={styles.input} />
+                  <TextInput placeholder="Quantity" placeholderTextColor="#64748b" keyboardType="numeric" value={editQty} onChangeText={setEditQty} style={styles.input} />
+
+                  <Text style={{marginTop:15,fontWeight:"600"}}>Unit Type</Text>
+                  <View style={{flexDirection:"row",marginTop:10}}>
+                      {["Qty","Kg","Gram"].map(unit=>(
+                          <TouchableOpacity
+                              key={unit}
+                              onPress={()=>setUnitType(unit)}
+                              style={{
+                                  flex:1,
+                                  padding:12,
+                                  marginHorizontal:4,
+                                  borderRadius:10,
+                                  backgroundColor:unitType===unit ? "#22c55e":"#e5e7eb"
+                              }}
+                          >
+                              <Text style={{ textAlign:"center", color:unitType===unit?"#fff":"#000" }}>{unit}</Text>
+                          </TouchableOpacity>
+                      ))}
+                  </View>
+                </>
+              )}
+
               {showDropdown && editName !== "" && (
                 <View style={{ maxHeight: 150, backgroundColor: "#ffffff", borderRadius: 12, marginTop: 4, overflow: "hidden", elevation: 4, borderWidth: 1, borderColor: "#e2e8f0" }}>
                   <ScrollView nestedScrollEnabled={true}>
@@ -626,25 +754,10 @@ export default function ScanScreen({ navigation }) {
                 </View>
               )}
 
-              <TextInput placeholder="Brand Name" placeholderTextColor="#64748b" value={editBrand} onChangeText={setEditBrand} style={styles.input} />
-              <TextInput placeholder="Image URL" placeholderTextColor="#64748b" value={editImage} onChangeText={setEditImage} style={styles.input} />
-              <TextInput placeholder="Purchase Price" placeholderTextColor="#64748b" keyboardType="numeric" value={purchasePrice} onChangeText={setPurchasePrice} style={styles.input} />
-              <TextInput placeholder="Sales Price" placeholderTextColor="#64748b" keyboardType="numeric" value={salesPrice} onChangeText={setSalesPrice} style={styles.input} />
-              <TextInput placeholder="Quantity" placeholderTextColor="#64748b" keyboardType="numeric" value={editQty} onChangeText={setEditQty} style={styles.input} />
-
-              <Text style={{ marginTop: 15, fontWeight: "600" }}>Unit Type</Text>
-              <View style={{ flexDirection: "row", marginTop: 10 }}>
-                {["Qty", "Kg", "Gram"].map(unit => (
-                  <TouchableOpacity key={unit} onPress={() => setUnitType(unit)} style={{ flex: 1, padding: 12, marginHorizontal: 4, borderRadius: 10, backgroundColor: unitType === unit ? "#22c55e" : "#e5e7eb" }}>
-                    <Text style={{ textAlign: "center", color: unitType === unit ? "#fff" : "#000" }}>{unit}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
               <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 25, paddingBottom: 10 }}>
                 <TouchableOpacity onPress={() => setModalVisible(false)} style={{ padding: 10 }}><Text style={{ color: "red", fontSize: 16, fontWeight: "bold" }}>Cancel</Text></TouchableOpacity>
                 <TouchableOpacity onPress={handleAddOrUpdateProduct} style={{ padding: 10 }}>
-                  <Text style={{ color: "green", fontSize: 16, fontWeight: "bold" }}>{tempProduct?.id ? "Update" : "Add"}</Text>
+                  <Text style={{ color: "green", fontSize: 16, fontWeight: "bold" }}>{tempProduct?.id && tempProduct.id.length > 10 && !tempProduct.id.startsWith("NO-BARCODE-") ? "Update" : "Add"}</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>

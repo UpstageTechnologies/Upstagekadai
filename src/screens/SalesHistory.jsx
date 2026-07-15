@@ -24,6 +24,7 @@ import { ThemeContext } from "../theme/ThemeContext";
 export default function SalesHistory({ appMode }) {
   const { theme, darkMode } = useContext(ThemeContext);
   const isFocused = useIsFocused();
+  
 
   const [sales, setSales] = useState([]);
   const [selectedBill, setSelectedBill] = useState(null);
@@ -37,6 +38,7 @@ export default function SalesHistory({ appMode }) {
   const [salesView, setSalesView] = useState("Total Sales");     
   const [profitView, setProfitView] = useState("Total Profit");   
   const [currentMode, setCurrentMode] = useState("local");
+  
 
   const parseDate = (createdAt) => {
     if (!createdAt) return new Date();
@@ -99,15 +101,19 @@ export default function SalesHistory({ appMode }) {
     };
   }, [isFocused, appMode]);
 
-  const reprintBill = async () => {
+const reprintBill = async () => {
     if (!selectedBill) return;
 
     const billNo = selectedBill.billNo || selectedBill.invoiceId || "BILL-000001";
     const total = Number(selectedBill?.total || 0);
     const profit = Number(selectedBill?.profit || 0);
-    const tax = (total * 0).toFixed(2);
+    
+    // 🌟 பிக்ஸ்: 'tax' வேரியபிள் இல்லாததால் வந்த எர்ரர் இங்கு சரிசெய்யப்பட்டுள்ளது
+    const tax = (total * 0).toFixed(2); 
     const grandTotal = (total + Number(tax)).toFixed(2);
+    
     const formattedBillDate = parseDate(selectedBill?.createdAt).toLocaleString("en-GB");
+    const pMode = selectedBill?.paymentMode || "CASH";
 
     let logoHtml = "";
     try {
@@ -118,60 +124,46 @@ export default function SalesHistory({ appMode }) {
     } catch (err) {
       console.log(err);
     }
-
-    const html = `
+const html = `
     <html>
     <head>
-    <style>
-    body{font-family:Arial;padding:30px;color:#222;}.invoice-box{max-width:800px;margin:auto;border:1px solid #ddd;padding:35px;}.top{display:flex;justify-content:space-between;margin-bottom:30px;}.logo{font-size:30px;font-weight:bold;color:#111827;}.small{font-size:12px;color:#555;line-height:1.6;}.invoice-title{text-align:center;font-size:36px;letter-spacing:4px;margin-bottom:25px;}.info-row{display:flex;justify-content:space-between;margin-bottom:30px;}table{width:100%;border-collapse:collapse;margin-top:20px;}th{background:#f4c542;padding:12px;text-align:left;}td{padding:12px;border-bottom:1px solid #ddd;}.total-box{margin-top:30px;width:300px;margin-left:auto;}.total-row{display:flex;justify-content:space-between;padding:8px 0;}.grand{background:#f4c542;padding:14px;font-size:20px;font-weight:bold;margin-top:10px;}.footer{margin-top:60px;display:flex;justify-content:space-between;}.sign{text-align:center;}
-    </style>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+      <style>
+        @page { size: 58mm auto; margin: 0mm; }
+        body { font-family: monospace; margin: 0; padding: 6mm 4mm; font-size: 12px; color: #000; font-weight: bold; }
+        .center { text-align: center; } 
+        .divider { border-top: 1px dashed #000; margin: 6px 0; }
+        .row { display: flex; justify-content: space-between; }
+        table { width: 100%; border-collapse: collapse; }
+        td { font-size: 12px; padding: 2px 0; }
+        .right { text-align: right; }
+      </style>
     </head>
     <body>
-    <div class="invoice-box">
-    <div class="top">
-    <div style="display:flex;align-items:center;">
-    ${logoHtml}
-    <div>
-    <div class="logo">${shopName}</div>
-    <div class="small">Sales Invoice (${currentMode.toUpperCase()})</div>
-    </div>
-    </div>
-    <div class="small">
-    Bill No : ${billNo}<br/>
-    Date : ${formattedBillDate}<br/>
-    Payment : ${selectedBill?.paymentMode || "CASH"}
-    </div>
-    </div>
-    <div class="invoice-title">INVOICE</div>
-    <div class="info-row">
-    <div><b>Bill To</b><br/>Walk-in Customer</div>
-    <div><b>Account No</b><br/>${Date.now().toString().slice(-8)}</div>
-    </div>
-    <table>
-    <tr><th>Item Description</th><th>Price</th><th>Qty</th><th>Total</th></tr>
-    ${selectedBill.items?.map(i => `
-    <tr>
-    <td>${i.itemName || i.name}</td>
-    <td>₹${Number(i.price || 0).toFixed(2)}</td>
-    <td>${i.qty}</td>
-    <td>₹${(i.qty * i.price).toFixed(2)}</td>
-    </tr>
-    `).join("")}
-    </table>
-    <div class="total-box">
-    <div class="total-row"><span>Subtotal</span><span>₹${total.toFixed(2)}</span></div>
-    <div class="total-row"><span>Tax</span><span>₹${tax}</span></div>
-    <div class="total-row"><span>Profit</span><span>₹${profit.toFixed(2)}</span></div>
-    <div class="grand">Grand Total ₹${grandTotal}</div>
-    </div>
-    <div class="footer">
-    <div>Thank you for your business!<br/>Terms: Goods once sold not returnable.</div>
-    <div class="sign">Authorized Signature<br/><br/>_____________</div>
-    </div>
-    </div>
+      <div class="center" style="font-size:14px; font-weight:bold; text-transform: uppercase;">${shopName}</div>
+      <div class="center">Sales Invoice (${currentMode.toUpperCase()})</div>
+      <div class="divider"></div>
+      <div>Bill No: ${billNo}</div>
+      <div>Date: ${formattedBillDate}</div>
+      <div>Payment: ${pMode}</div>
+      <div class="divider"></div>
+      <table>
+        ${selectedBill.items?.map(i => `
+          <tr>
+            <td>${i.itemName || i.name}<br/>&nbsp;&nbsp;${i.qty} x ₹${Number(i.price || i.salesPrice || 0).toFixed(2)}</td>
+            <td class="right" style="vertical-align:bottom;">₹${(i.qty * Number(i.price || i.salesPrice || 0)).toFixed(2)}</td>
+          </tr>
+        `).join("")}
+      </table>
+      <div class="divider"></div>
+      <div class="row"><span>Subtotal:</span><span>₹${total.toFixed(2)}</span></div>
+      <div class="row" style="font-size:13px; font-weight:bold; border-top: 1px dashed #000; padding-top: 6px; margin-top: 4px;">
+        <span>Grand Total:</span><span>₹${Number(grandTotal).toFixed(2)}</span>
+      </div>
+      <div class="divider"></div>
+      <div class="center" style="margin-top:12px; font-style: italic;">Thank you for your business!</div>
     </body>
-    </html>
-    `;
+    </html>`;
 
     await RNPrint.print({ html });
   };

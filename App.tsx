@@ -25,6 +25,9 @@ import SplashScreen from "./src/screens/SplashScreen";
 import JournalEntry from "./src/screens/JournalEntry";
 import DemoLogin from "./src/screens/DemoLogin";
 import OrdersScreen from "./src/screens/OrdersScreen";
+// 🌟 NEW IMPORT
+import SettingsScreen from "./src/screens/SettingsScreen"; 
+
 import {
   doc,
   getDoc,
@@ -33,121 +36,51 @@ import {
 const Stack = createNativeStackNavigator<any>();
 
 function App() {
-
-  const isDarkMode =
-    useColorScheme() === "dark";
-
+  const isDarkMode = useColorScheme() === "dark";
 
   return (
     <SafeAreaProvider>
-
-      <StatusBar
-        barStyle={
-          isDarkMode
-            ? "light-content"
-            : "dark-content"
-        }
-      />
-
-        <ThemeProvider>
-
-<NavigationContainer>
-
-            <Stack.Navigator
-             initialRouteName="Splash"
-              screenOptions={{
-                headerShown: false,
-              }}
-              >
-
+      <StatusBar barStyle={isDarkMode ? "light-content" : "dark-content"} />
+      <ThemeProvider>
+        <NavigationContainer>
+          <Stack.Navigator
+            initialRouteName="Splash"
+            screenOptions={{
+              headerShown: false,
+            }}
+          >
+            <Stack.Screen name="Onboarding" component={OnboardingScreen} />
+            <Stack.Screen name="Splash" component={SplashScreen} />
+            <Stack.Screen name="Login" component={Login} />
+            <Stack.Screen name="Register" component={Register} />
+            <Stack.Screen name="Trial" component={TrialScreen} />
+            <Stack.Screen name="Dashboard" component={Dashboard} />
+            <Stack.Screen name="JournalEntry" component={JournalEntry} />
+            <Stack.Screen name="Scan" component={ScanScreen} />
+            <Stack.Screen name="Sales" component={SalesScreen} />
+            <Stack.Screen name="SalesHistory" component={SalesHistory} />
+            <Stack.Screen name="PurchaseHistory" component={PurchaseHistory} />
+            <Stack.Screen name="Inventory" component={InventoryScreen} />
+            <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+            <Stack.Screen name="DemoLogin" component={DemoLogin} />
             
-
-          <Stack.Screen
-            name="Onboarding"
-            component={OnboardingScreen}
-          />
-          <Stack.Screen
-  name="Splash"
-  component={SplashScreen}
-/>
-          <Stack.Screen
-            name="Login"
-            component={Login}
-          />
-
-          <Stack.Screen
-            name="Register"
-            component={Register}
-          />
-
-          <Stack.Screen
-            name="Trial"
-            component={TrialScreen}
-           />
-
-          <Stack.Screen
-            name="Dashboard"
-            component={Dashboard}
-          />
-
-       <Stack.Screen
-        name="JournalEntry"
-        component={JournalEntry}
-      />
-
-          <Stack.Screen
-            name="Scan"
-            component={ScanScreen}
-          />
-
-          <Stack.Screen
-            name="Sales"
-            component={SalesScreen}
-          />
-
-          <Stack.Screen
-            name="SalesHistory"
-            component={SalesHistory}
-          />
-
-          <Stack.Screen
-            name="PurchaseHistory"
-            component={PurchaseHistory}
-          />
-
-          <Stack.Screen
-            name="Inventory"
-            component={InventoryScreen}
-          />
-
-          <Stack.Screen
-            name="Subscription"
-            component={SubscriptionScreen}
-          />
-
-           <Stack.Screen
-              name="DemoLogin"
-              component={DemoLogin}
-            />
-
-          <Stack.Screen
-            name="Profile"
-            component={ProfileScreen}
-            options={{ headerShown:false }}
-          />
-
-           
             <Stack.Screen
-              name="Orders"
-              component={OrdersScreen}
+              name="Profile"
+              component={ProfileScreen}
+              options={{ headerShown: false }}
             />
 
-        </Stack.Navigator>
-
-      </NavigationContainer>
-
-</ThemeProvider>
-
+            {/* 🌟 NEW SETTINGS SCREEN REGISTERED */}
+            <Stack.Screen
+              name="Settings"
+              component={SettingsScreen}
+              options={{ headerShown: false }}
+            />
+            
+            <Stack.Screen name="Orders" component={OrdersScreen} />
+          </Stack.Navigator>
+        </NavigationContainer>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }

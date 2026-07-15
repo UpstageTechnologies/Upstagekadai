@@ -235,25 +235,28 @@ const currentSalesData = sales.filter(s => {
             </TouchableOpacity>
           </View>
 
-          {showProfileMenu && (
-            <View style={[styles.dropdownMenu, { backgroundColor: theme.card }]}>
-              <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Profile"); }}>
-                <Icon name="account-circle" size={20} color={theme.text} />
-                <Text style={[styles.dropdownText, { color: theme.text }]}>Profile</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.dropdownItem} onPress={() => { toggleTheme(); setShowProfileMenu(false); }}>
-                <Icon name={darkMode ? "weather-sunny" : "weather-night"} size={20} color={theme.text} />
-                <Text style={[styles.dropdownText, { color: theme.text }]}>Dark Mode</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.dropdownItem, { backgroundColor: userPlan === "Basic" ? "#2563EB" : userPlan === "Premium" ? "#16A34A" : userPlan === "Pro" ? "#FFD700" : "#6366F1", borderRadius: 12, marginHorizontal: 8, marginTop: 6, paddingVertical: 14, elevation: 5 }]}
-                onPress={() => { setShowProfileMenu(false); navigation.navigate("Subscription"); }}
-              >
-                <Icon name="diamond-stone" size={20} color={userPlan === "Premium" ? "#111827" : "#FFFFFF"} />
-                <Text style={[styles.dropdownText, { color: userPlan === "Premium" ? "#111827" : "#FFFFFF", fontWeight: "700" }]}>Upgrade</Text>
-              </TouchableOpacity>
-            </View>
-          )}
+      {showProfileMenu && (
+        <View style={[styles.dropdownMenu, { backgroundColor: theme.card }]}>
+          <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Profile"); }}>
+            <Icon name="account-circle" size={20} color={theme.text} />
+            <Text style={[styles.dropdownText, { color: theme.text }]}>Profile</Text>
+          </TouchableOpacity>
+          
+          {/* 🌟 NEW SETTINGS OPTION */}
+          <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Settings"); }}>
+            <Icon name="cog-outline" size={20} color={theme.text} />
+            <Text style={[styles.dropdownText, { color: theme.text }]}>Settings</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.dropdownItem, { backgroundColor: userPlan === "Basic" ? "#2563EB" : userPlan === "Premium" ? "#16A34A" : userPlan === "Pro" ? "#FFD700" : "#6366F1", borderRadius: 12, marginHorizontal: 8, marginTop: 6, paddingVertical: 14, elevation: 5 }]}
+            onPress={() => { setShowProfileMenu(false); navigation.navigate("Subscription"); }}
+          >
+            <Icon name="diamond-stone" size={20} color={userPlan === "Premium" ? "#111827" : "#FFFFFF"} />
+            <Text style={[styles.dropdownText, { color: userPlan === "Premium" ? "#111827" : "#FFFFFF", fontWeight: "700" }]}>Upgrade</Text>
+          </TouchableOpacity>
+        </View>
+      )}
         </View>
       </SafeAreaView>
 

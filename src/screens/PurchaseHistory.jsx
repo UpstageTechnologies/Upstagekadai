@@ -105,7 +105,7 @@ export default function PurchaseHistory({ appMode }) {
     loadShop();
   }, []);
 
-  const reprintBill = async () => {
+const reprintBill = async () => {
     if (!selectedBill || !selectedBill.items) return;
 
     const purchaseTotal = selectedBill.items.reduce(
@@ -113,15 +113,14 @@ export default function PurchaseHistory({ appMode }) {
       0
     );
 
-    const tax = (purchaseTotal * 5 / 100).toFixed(2);
-    const grandTotal = (Number(purchaseTotal) + Number(tax)).toFixed(2);
+    // 🌟 பிக்ஸ்: 'tax' வேரியபிள் விடுபட்டதால் வந்த எர்ரர் இங்கு சரிசெய்யப்பட்டுள்ளது
+    const tax = (purchaseTotal * 5 / 100).toFixed(2); 
 
-    const purchaseNo =
-      selectedBill.billNo || selectedBill.invoiceId || ("PUR-" + Date.now());
-
+    const purchaseNo = selectedBill.autoBillNo || selectedBill.billNo || selectedBill.invoiceId || "PUR-0000";
+    
     const purchaseDate = selectedBill.createdAt?.seconds
-      ? new Date(selectedBill.createdAt.seconds * 1000).toLocaleString()
-      : new Date().toLocaleString();
+      ? new Date(selectedBill.createdAt.seconds * 1000).toLocaleDateString("en-GB")
+      : new Date().toLocaleDateString("en-GB");
 
     let logoHtml = "";
     try {
@@ -148,51 +147,50 @@ export default function PurchaseHistory({ appMode }) {
       console.log("Logo Error:", err);
     }
 
-    const html = `
-<html>
-<head>
-<style>
-body{font-family:Arial;padding:30px;color:#222;}.invoice-box{max-width:800px;margin:auto;border:1px solid #ddd;padding:35px;}.top{display:flex;justify-content:space-between;margin-bottom:30px;}.logo{font-size:30px;font-weight:bold;}.small{font-size:12px;line-height:1.6;}.invoice-title{text-align:center;font-size:34px;margin-bottom:25px;}table{width:100%;border-collapse:collapse;margin-top:20px;}th{background:#86efac;padding:12px;}td{padding:12px;border-bottom:1px solid #ddd;}.total-box{margin-top:30px;width:320px;margin-left:auto;}.total-row{display:flex;justify-content:space-between;padding:8px 0;}.grand{background:#86efac;padding:14px;font-size:20px;font-weight:bold;margin-top:10px;}
-</style>
-</head>
-<body>
-<div class="invoice-box">
-<div class="top">
-<div style="display:flex;align-items:center;">
-${logoHtml}
-<div>
-<div style="font-size:30px;font-weight:bold;margin-bottom:4px;">${shopName}</div>
-<div style="font-size:12px;color:#666;">Stock Purchase Entry (${currentMode.toUpperCase()})</div>
-</div>
-</div>
-<div class="small">Purchase No : ${purchaseNo}<br/>Date : ${purchaseDate}</div>
-</div>
-<div class="invoice-title">PURCHASE INVOICE</div>
-<div style="margin-bottom:20px;font-size:16px;"><b>Supplier :</b> ${selectedBill?.supplierName || "-"}</div>
-<table>
-<tr><th>Product</th><th>Cost</th><th>Qty</th><th>Total</th></tr>
-${selectedBill.items.map(i => `
-<tr>
-<td>${i.itemName || i.name}</td>
-<td>₹${Number(i.purchasePrice || i.price || 0).toFixed(2)}</td>
-<td>${i.qty}</td>
-<td>₹${((i.purchasePrice || i.price || 0) * i.qty).toFixed(2)}</td>
-</tr>
-`).join("")}
-</table>
-<div class="total-box">
-<div class="total-row"><span>Subtotal</span><span>₹${purchaseTotal.toFixed(2)}</span></div>
-<div class="total-row"><span>Tax</span><span>₹${tax}</span></div>
-<div class="grand">Grand Total ₹${grandTotal}</div>
-</div>
-</div>
-</body>
-</html>
-`;
+const html = `
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+      <style>
+        @page { size: 58mm auto; margin: 0mm; }
+        body { font-family: monospace; margin: 0; padding: 6mm 4mm; font-size: 12px; color: #000; font-weight: bold; }
+        .center { text-align: center; } 
+        .divider { border-top: 1px dashed #000; margin: 6px 0; }
+        .row { display: flex; justify-content: space-between; }
+        table { width: 100%; border-collapse: collapse; }
+        td { font-size: 12px; padding: 2px 0; }
+        .right { text-align: right; }
+      </style>
+    </head>
+    <body>
+      <div class="center" style="font-size:14px; font-weight:bold; text-transform: uppercase;">${shopName}</div>
+      <div class="center">Stock Purchase Entry (${currentMode.toUpperCase()})</div>
+      <div class="divider"></div>
+      <div>Purchase No: ${purchaseNo}</div>
+      <div>Date: ${purchaseDate}</div>
+      <div style="margin-top: 2px;">Supplier: ${selectedBill?.supplierName || "-"}</div>
+      <div class="divider"></div>
+      <table>
+        ${selectedBill.items.map(i => `
+          <tr>
+            <td>${i.itemName || i.name}<br/>&nbsp;&nbsp;${i.qty} x ₹${Number(i.purchasePrice || i.price || 0).toFixed(2)}</td>
+            <td class="right" style="vertical-align:bottom;">₹${(i.qty * Number(i.purchasePrice || i.price || 0)).toFixed(2)}</td>
+          </tr>
+        `).join("")}
+      </table>
+      <div class="divider"></div>
+      <div class="row"><span>Subtotal:</span><span>₹${purchaseTotal.toFixed(2)}</span></div>
+      <div class="row"><span>Tax (5%):</span><span>₹${tax}</span></div>
+      <div class="row" style="font-size:13px; font-weight:bold; border-top: 1px dashed #000; padding-top: 6px; margin-top: 4px;">
+        <span>Grand Total:</span><span>₹${Number(selectedBill?.total || (purchaseTotal + Number(tax))).toFixed(2)}</span>
+      </div>
+      <div class="divider"></div>
+      <div class="center" style="margin-top:12px; font-style: italic;">Stock Entry Confirmed</div>
+    </body>
+    </html>`;
 
     await RNPrint.print({ html });
   };
-
   const totalPurchase = items.reduce((sum, item) => sum + Number(item.total || 0), 0);
 
   const monthlyPurchase = items
