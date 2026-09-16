@@ -22,8 +22,8 @@ android {
         applicationId "com.myshopapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-      versionCode 4
-    versionName "1.0.3"
+      versionCode 10
+    versionName "1.0.9"
     }
 
     buildFeatures {
@@ -67,6 +67,8 @@ android {
 dependencies {
     implementation("com.facebook.react:react-android")
 
+    implementation platform("com.google.firebase:firebase-bom:34.2.0")
+implementation "com.google.firebase:firebase-messaging"
     // ❌ REMOVE pager-view completely (IMPORTANT)
 
     if (hermesEnabled.toBoolean()) {
@@ -74,4 +76,5 @@ dependencies {
     } else {
         implementation jscFlavor
     }
-}
+} 
+apply plugin: "com.google.gms.google-services"

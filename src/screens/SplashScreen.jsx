@@ -9,10 +9,10 @@ import {
 
 import {
   getSession,
-} from "../../utils/session";
+} from "../utils/session";
 
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "../firebaseConfig";
+import { auth } from "../utils/firebaseConfig";
 
 export default function SplashScreen({
   navigation,

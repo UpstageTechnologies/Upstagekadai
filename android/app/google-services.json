@@ -1,0 +1,68 @@
+{
+  "project_info": {
+    "project_number": "207862672282",
+    "project_id": "scaner-billing",
+    "storage_bucket": "scaner-billing.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:207862672282:android:445af3cb07bd1c781ae823",
+        "android_client_info": {
+          "package_name": "com.kadaiapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "207862672282-hsv1b0tj2lb136u0bn072vltkdsdeem9.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBPWRpjuXhfQ74hngCYg0v9An2p1moWVV0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "207862672282-hsv1b0tj2lb136u0bn072vltkdsdeem9.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:207862672282:android:1595eb50c57a60381ae823",
+        "android_client_info": {
+          "package_name": "com.myshopapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "207862672282-hsv1b0tj2lb136u0bn072vltkdsdeem9.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBPWRpjuXhfQ74hngCYg0v9An2p1moWVV0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "207862672282-hsv1b0tj2lb136u0bn072vltkdsdeem9.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

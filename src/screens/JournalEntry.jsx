@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
-  Modal, // 🌟 Popup-க்காக சேர்க்கப்பட்டது
+  Modal, 
 } from "react-native";
 
 import {
@@ -17,15 +17,17 @@ import {
   doc
 } from "firebase/firestore";
 
-import { auth, db } from "../firebaseConfig";
+import { auth, db } from "../utils/firebaseConfig";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import RNPrint from "react-native-print";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import RNFS from "react-native-fs";
-
+import { useTheme } from "../theme/ThemeContext"; // 🌟 Added Theme Hook
+import { getSession } from "../utils/session";
 export default function JournalEntry({ navigation }) {
+  const { darkMode, theme } = useTheme(); // 🌟 Access theme properties
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fromDate, setFromDate] = useState(new Date());
@@ -45,9 +47,9 @@ export default function JournalEntry({ navigation }) {
   const [selectedDateSalesAmt, setSelectedDateSalesAmt] = useState(0);
   const [onlineSalesAmt, setOnlineSalesAmt] = useState(0);
 
-  // 🌟 Popup மற்றும் தனிநபர் தயாரிப்பு விவரங்களுக்கான States
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [userRole, setUserRole] = useState("master");
 
   const salesDataRef = useRef([]);
   const purchaseDataRef = useRef([]);
@@ -78,6 +80,14 @@ export default function JournalEntry({ navigation }) {
   }, []);
 
   useEffect(() => {
+  const checkRole = async () => {
+    const session = await getSession();
+    if (session?.role) setUserRole(session.role);
+  };
+  checkRole();
+}, []);
+
+  useEffect(() => {
     const user = auth.currentUser;
     if (!user) return;
 
@@ -104,7 +114,7 @@ export default function JournalEntry({ navigation }) {
               purchaseAmount: 0, 
               salesAmount: 0, 
               profit: 0,
-              purchaseHistory: [], // 🌟 தனி ஹிஸ்டரி டிராக்கிங்
+              purchaseHistory: [], 
               salesHistory: []
             };
           }
@@ -113,7 +123,6 @@ export default function JournalEntry({ navigation }) {
           map[name].purchaseQty += qty;
           map[name].purchaseAmount += purchasePrice * qty;
 
-          // சப்ளையர் பெயர் மற்றும் பில் விவரங்களை சேமிக்கிறோம்
           map[name].purchaseHistory.push({
             supplierName: bill.supplierName || bill.vendorName || "Unknown Supplier",
             qty: qty,
@@ -149,7 +158,6 @@ export default function JournalEntry({ navigation }) {
           map[name].salesAmount += salesPrice * qty;
           map[name].profit += (salesPrice - purchasePrice) * qty;
 
-          // சேல்ஸ் ஹிஸ்டரியை சேமிக்கிறோம்
           map[name].salesHistory.push({
             customerName: bill.customerName || "Customer",
             billNo: bill.billNo || bill.invoiceId || "N/A",
@@ -298,7 +306,6 @@ export default function JournalEntry({ navigation }) {
 
   const displaySalesVal = salesView === "Online Sales" ? onlineSalesAmt : salesView === "Selected Sales" ? selectedDateSalesAmt : filteredSales;
 
-  // 🌟 குறிப்பிட்ட ஒரு பொருளின் அறிக்கையை மட்டும் பிரிண்ட் எடுக்க
   const printSingleProductReport = async (product) => {
     const pHistoryHtml = product.purchaseHistory.map(h => `
       <tr>
@@ -416,14 +423,14 @@ export default function JournalEntry({ navigation }) {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+      <View style={[styles.container, { backgroundColor: theme.background, justifyContent: "center", alignItems: "center" }]}>
         <ActivityIndicator size="large" color="#6366f1" />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
         
         {showFrom && (
@@ -436,22 +443,22 @@ export default function JournalEntry({ navigation }) {
 
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()}>
-            <Icon name="arrow-left" size={26} color="#111827" />
+            <Icon name="arrow-left" size={26} color={theme.text} />
           </TouchableOpacity>
-          <Text style={styles.title}>
+          <Text style={[styles.title, { color: theme.text }]}>
             Journal ({currentMode === "global" ? "Global" : "Local"})
           </Text>
         </View>
 
         <View style={{ flexDirection: "row", paddingHorizontal: 20, marginTop: 10 }}>
-          <TouchableOpacity onPress={() => setShowFrom(true)} style={styles.datePickerBtn}>
+          <TouchableOpacity onPress={() => setShowFrom(true)} style={[styles.datePickerBtn, { backgroundColor: theme.card }]}>
             <Text style={styles.datePickerLabel}>FROM DATE</Text>
-            <Text style={styles.datePickerValue}>{fromDate.toLocaleDateString()}</Text>
+            <Text style={[styles.datePickerValue, { color: theme.text }]}>{fromDate.toLocaleDateString()}</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => setShowTo(true)} style={styles.datePickerBtn}>
+          <TouchableOpacity onPress={() => setShowTo(true)} style={[styles.datePickerBtn, { backgroundColor: theme.card }]}>
             <Text style={styles.datePickerLabel}>TO DATE</Text>
-            <Text style={styles.datePickerValue}>{toDate.toLocaleDateString()}</Text>
+            <Text style={[styles.datePickerValue, { color: theme.text }]}>{toDate.toLocaleDateString()}</Text>
           </TouchableOpacity>
         </View>
 
@@ -459,27 +466,33 @@ export default function JournalEntry({ navigation }) {
           <TouchableOpacity 
             activeOpacity={0.85} 
             onPress={toggleSalesView} 
-            style={[styles.statCardBox, { backgroundColor: "#eefbf0" }]}
+            style={[styles.statCardBox, { backgroundColor: darkMode ? "#064e3b" : "#eefbf0" }]}
           >
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Icon name="trending-up" size={24} color="#16a34a" />
               <Icon name="menu-down" size={20} color="#16a34a" />
             </View>
-            <Text style={styles.statLabel}>{salesView} ▼</Text>
-            <Text style={[styles.statAmount, { color: "#16a34a" }]}>₹{displaySalesVal.toFixed(0)}</Text>
+            <Text style={styles.statLabel}>
+              {salesView === "Total Sales" ? "Total Sales" : salesView === "Selected Sales" ? "Selected Sales" : "Online Sales"} ▼
+            </Text>
+            <Text style={[styles.statAmount, { color: "#16a34a" }]}>
+            {userRole === "employee" ? "🔒 Locked" : `₹${displaySalesVal.toFixed(0)}`}
+            </Text>
           </TouchableOpacity>
 
-          <View style={[styles.statCardBox, { backgroundColor: "#fff1f2", marginLeft: 12 }]}>
+          <View style={[styles.statCardBox, { backgroundColor: darkMode ? "#7f1d1d" : "#fff1f2", marginLeft: 12 }]}>
             <Icon name="shopping" size={24} color="#ef4444" />
             <Text style={styles.statLabel}>Total Purchase</Text>
-            <Text style={[styles.statAmount, { color: "#ef4444" }]}>₹{filteredPurchase.toFixed(0)}</Text>
+            <Text style={[styles.statAmount, { color: "#ef4444" }]}>
+             {userRole === "employee" ? "🔒 Locked" : `₹${filteredPurchase.toFixed(0)}`}
+            </Text>
           </View>
         </View>
 
         <View style={styles.profitCard}>
           <Text style={{ color: "#e0e7ff", fontSize: 14 }}>Net Profit</Text>
           <Text style={{ color: "#fff", fontSize: 34, fontWeight: "bold", marginTop: 8 }}>
-            ₹{filteredProfit.toFixed(0)}
+           {userRole === "employee" ? "🔒 Locked" : `₹${filteredProfit.toFixed(0)}`}
           </Text>
         </View>
 
@@ -489,7 +502,7 @@ export default function JournalEntry({ navigation }) {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.tableHeaderRow}>
+        <View style={[styles.tableHeaderRow, { backgroundColor: darkMode ? "#312e81" : "#f3f0ff" }]}>
           <Text style={{ flex: 2.5, fontWeight: "700", color: "#6366f1" }}>Product</Text>
           <Text style={{ flex: 1, textAlign: "right", fontWeight: "700", color: "#6366f1" }}>Purchase</Text>
           <Text style={{ flex: 1, textAlign: "right", fontWeight: "700", color: "#6366f1" }}>Sales</Text>
@@ -500,19 +513,19 @@ export default function JournalEntry({ navigation }) {
             <TouchableOpacity 
               key={item.itemName} 
               activeOpacity={0.7} 
-              onPress={() => handleProductPress(item)} // 🌟 கிளிக் செய்யும் போது பாப்-அப் திறக்கும்
-              style={styles.listItemCard}
+              onPress={() => handleProductPress(item)} 
+              style={[styles.listItemCard, { backgroundColor: theme.card, borderColor: darkMode ? "#334155" : "#eef2ff" }]}
             >
               <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Text numberOfLines={1} style={styles.productNameText}>
+                <Text numberOfLines={1} style={[styles.productNameText, { color: theme.text }]}>
                   {item.itemName}
                 </Text>
                 <Text style={styles.purchaseAmountText}>
-                  ₹{item.purchaseAmount.toFixed(0)}
+                 {userRole === "employee" ? "🔒" : `₹${item.purchaseAmount.toFixed(0)}`}
                 </Text>
                 <Text style={styles.salesAmountText}>
-                  ₹{item.salesAmount.toFixed(0)}
-                </Text>
+                {userRole === "employee" ? "🔒" : `₹${item.salesAmount.toFixed(0)}`}
+               </Text>
               </View>
             </TouchableOpacity>
           ))}
@@ -520,7 +533,6 @@ export default function JournalEntry({ navigation }) {
 
       </ScrollView>
 
-      {/* 🌟 புதிய மற்றும் சரிசெய்யப்பட்ட பாப்-அப் (Modal Component) */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -528,57 +540,73 @@ export default function JournalEntry({ navigation }) {
         onRequestClose={() => setModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
+          <View style={[styles.modalContainer, { backgroundColor: theme.card }]}>
             {selectedProduct && (
               <>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>{selectedProduct.itemName.toUpperCase()}</Text>
+                <View style={[styles.modalHeader, { borderColor: darkMode ? "#334155" : "#f1f5f9" }]}>
+                  <Text style={[styles.modalTitle, { color: theme.text }]}>{selectedProduct.itemName.toUpperCase()}</Text>
                   <TouchableOpacity onPress={() => setModalVisible(false)}>
                     <Icon name="close" size={24} color="#ef4444" />
                   </TouchableOpacity>
                 </View>
 
-                <ScrollView showsVerticalScrollIndicator={false}>
-                  {/* சுருக்க விவரம் */}
-                  <View style={styles.modalSummaryBox}>
-                    <Text style={styles.summaryText}>Pur. Qty: <Text style={{fontWeight:'700'}}>{selectedProduct.purchaseQty}</Text> | Sales Qty: <Text style={{fontWeight:'700'}}>{selectedProduct.salesQty}</Text></Text>
-                    <Text style={[styles.summaryText, {marginTop: 4}]}>Est. Profit: <Text style={{color: '#16a34a', fontWeight: '700'}}>₹{selectedProduct.profit.toFixed(0)}</Text></Text>
-                  </View>
+               <ScrollView showsVerticalScrollIndicator={false}>
+  <View style={[styles.modalSummaryBox, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc" }]}>
+    <Text style={[styles.summaryText, { color: theme.text }]}>Pur. Qty: <Text style={{fontWeight:'700'}}>{selectedProduct.purchaseQty}</Text> | Sales Qty: <Text style={{fontWeight:'700'}}>{selectedProduct.salesQty}</Text></Text>
+    <Text style={[styles.summaryText, {marginTop: 4, color: theme.text }]}>Est. Profit: <Text style={{color: '#16a34a', fontWeight: '700'}}>₹{selectedProduct.profit.toFixed(0)}</Text></Text>
+  </View>
 
-                  {/* சப்ளையர் பர்ச்சேஸ் ஹிஸ்டரி */}
-                  <Text style={styles.sectionTitle}>Supplier Purchase History</Text>
-                  {selectedProduct.purchaseHistory.length === 0 ? (
-                    <Text style={styles.emptyText}>No purchase data for this period.</Text>
-                  ) : (
-                    selectedProduct.purchaseHistory.map((p, idx) => (
-                      <View key={idx} style={styles.historyRow}>
-                        <View style={{flex: 2}}>
-                          <Text style={styles.historyName}>{p.supplierName}</Text>
-                          <Text style={styles.historyDate}>{p.date}</Text>
-                        </View>
-                        <Text style={styles.historyDetails}>{p.qty} Qty × ₹{p.price.toFixed(0)}</Text>
-                      </View>
-                    ))
-                  )}
+  <Text style={styles.sectionTitle}>Supplier Purchase History</Text>
+  {selectedProduct.purchaseHistory.length === 0 ? (
+    <Text style={styles.emptyText}>No purchase data for this period.</Text>
+  ) : (
+    <View style={[styles.tableContainer, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
+      <View style={[styles.tableRow, styles.tableHeader, { backgroundColor: darkMode ? "#312e81" : "#eef2ff" }]}>
+        <Text style={[styles.thText, {flex: 1.2}]}>Date / Supplier</Text>
+        <Text style={[styles.thText, {flex: 0.6, textAlign: 'center'}]}>Price</Text>
+        <Text style={[styles.thText, {flex: 0.5, textAlign: 'center'}]}>Pur.</Text>
+        <Text style={[styles.thText, {flex: 0.5, textAlign: 'right'}]}>Total</Text>
+      </View>
+      {selectedProduct.purchaseHistory.map((p, idx) => (
+        <View key={idx} style={[styles.tableRow, { borderColor: darkMode ? "#334155" : "#edf2f7" }]}>
+          <View style={{flex: 1.2}}>
+            <Text style={[styles.tdBold, { color: theme.text }]}>{p.supplierName}</Text>
+            <Text style={styles.tdSub}>{p.date}</Text>
+          </View>
+          <Text style={[styles.tdText, {flex: 0.6, textAlign: 'center', color: theme.text }]}>₹{p.price.toFixed(0)}</Text>
+          <Text style={[styles.tdText, {flex: 0.5, textAlign: 'center', color: theme.text }]}>{p.qty}</Text>
+          <Text style={[styles.tdText, {flex: 0.5, textAlign: 'right', color: '#ef4444', fontWeight: '700'}]}>₹{(p.qty * p.price).toFixed(0)}</Text>
+        </View>
+      ))}
+    </View>
+  )}
 
-                  {/* வாடிக்கையாளர் விற்பனை ஹிஸ்டரி */}
-                  <Text style={styles.sectionTitle}>Sales History</Text>
-                  {selectedProduct.salesHistory.length === 0 ? (
-                    <Text style={styles.emptyText}>No sales data for this period.</Text>
-                  ) : (
-                    selectedProduct.salesHistory.map((s, idx) => (
-                      <View key={idx} style={styles.historyRow}>
-                        <View style={{flex: 2}}>
-                          <Text style={styles.historyName}>{s.customerName}</Text>
-                          <Text style={styles.historyDate}>{s.date} (Bill: {s.billNo})</Text>
-                        </View>
-                        <Text style={[styles.historyDetails, {color: '#16a34a'}]}>{s.qty} Qty × ₹{s.price.toFixed(0)}</Text>
-                      </View>
-                    ))
-                  )}
-                </ScrollView>
+  <Text style={styles.sectionTitle}>Sales History</Text>
+  {selectedProduct.salesHistory.length === 0 ? (
+    <Text style={styles.emptyText}>No sales data for this period.</Text>
+  ) : (
+    <View style={[styles.tableContainer, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
+      <View style={[styles.tableRow, styles.tableHeader, { backgroundColor: darkMode ? "#312e81" : "#eef2ff" }]}>
+        <Text style={[styles.thText, {flex: 1.2}]}>Date / Customer</Text>
+        <Text style={[styles.thText, {flex: 0.6, textAlign: 'center'}]}>Price</Text>
+        <Text style={[styles.thText, {flex: 0.5, textAlign: 'center'}]}>Sales</Text>
+        <Text style={[styles.thText, {flex: 0.5, textAlign: 'right'}]}>Total</Text>
+      </View>
+      {selectedProduct.salesHistory.map((s, idx) => (
+        <View key={idx} style={[styles.tableRow, { borderColor: darkMode ? "#334155" : "#edf2f7" }]}>
+          <View style={{flex: 1.2}}>
+            <Text style={[styles.tdBold, { color: theme.text }]}>{s.customerName}</Text>
+            <Text style={styles.tdSub}>{s.date} ({s.billNo})</Text>
+          </View>
+          <Text style={[styles.tdText, {flex: 0.6, textAlign: 'center', color: theme.text }]}>₹{s.price.toFixed(0)}</Text>
+          <Text style={[styles.tdText, {flex: 0.5, textAlign: 'center', color: theme.text }]}>{s.qty}</Text>
+          <Text style={[styles.tdText, {flex: 0.5, textAlign: 'right', color: '#16a34a', fontWeight: '700'}]}>₹{(s.qty * s.price).toFixed(0)}</Text>
+        </View>
+      ))}
+    </View>
+  )}
+</ScrollView>
 
-                {/* பாப்-அப் பிரிண்ட் பட்டன் */}
                 <TouchableOpacity 
                   style={styles.modalPrintBtn} 
                   onPress={() => {
@@ -616,7 +644,6 @@ const styles = StyleSheet.create({
   purchaseAmountText: { flex: 1, textAlign: "right", fontSize: 15, fontWeight: "600", color: "#ef4444" },
   salesAmountText: { flex: 1, textAlign: "right", fontSize: 15, fontWeight: "700", color: "#16a34a" },
   
-  // 🌟 Modal Styles (React Native-க்கு உகந்தவாறு மாற்றப்பட்டுள்ளது)
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
   modalContainer: { backgroundColor: "#fff", borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 24, maxHeight: "85%" },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20, borderBottomWidth: 1, borderColor: "#f1f5f9", paddingBottom: 10 },
@@ -629,5 +656,12 @@ const styles = StyleSheet.create({
   historyName: { fontSize: 14, fontWeight: "600", color: "#111827" },
   historyDate: { fontSize: 11, color: "#64748b", marginTop: 2 },
   historyDetails: { fontSize: 14, fontWeight: "600", color: "#ef4444", textAlign: "right" },
-  modalPrintBtn: { backgroundColor: "#6366f1", height: 54, borderRadius: 16, flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 25, marginBottom: 10 }
+  modalPrintBtn: { backgroundColor: "#6366f1", height: 54, borderRadius: 16, flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 25, marginBottom: 10 },
+  tableContainer: { backgroundColor: "#f8fafc", borderRadius: 12, padding: 8, marginBottom: 10, borderWidth: 1, borderColor: "#e2e8f0" },
+  tableRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderColor: "#edf2f7" },
+  tableHeader: { backgroundColor: "#eef2ff", borderRadius: 8, paddingVertical: 6, marginBottom: 4, borderBottomWidth: 0 },
+  thText: { fontSize: 12, fontWeight: "700", color: "#4f46e5" },
+  tdBold: { fontSize: 13, fontWeight: "600", color: "#111827" },
+  tdSub: { fontSize: 10, color: "#64748b", marginTop: 1 },
+  tdText: { fontSize: 13, color: "#334155" },
 });

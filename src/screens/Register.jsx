@@ -9,30 +9,32 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  SafeAreaView,
+  StatusBar,
 } from "react-native";
-import { GooglePlacesAutocomplete } from 'react-native-google-places-autocomplete';
+import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
-import { auth, db } from "../firebaseConfig";
-import { LogBox } from "react-native";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
 
-LogBox.ignoreLogs([
-  "VirtualizedLists should never be nested",
-]);
+import { LogBox } from "react-native";
+import { auth } from "../utils/firebaseConfig";
+import { getFunctions, httpsCallable } from "firebase/functions";
+
+LogBox.ignoreLogs(["VirtualizedLists should never be nested"]);
 
 export default function RegisterScreen({ navigation }) {
   const [shopName, setShopName] = useState("");
+  
+  const [shopType, setShopType] = useState("");
+  const [showTypeDropdown, setShowTypeDropdown] = useState(false);
+  const shopTypes = ["Store", "Super Market", "Factory", "Medical", "Other"];
+
   const [ownerName, setOwnerName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
-  
-  // 📍 NearMe கணக்கீட்டிற்கான புதிய ஸ்டேட்ஸ்
+
   const [shopLat, setShopLat] = useState(null);
   const [shopLon, setShopLon] = useState(null);
-
-  // 🚚 Local / Global தேர்வுக்கான புதிய ஸ்டேட் (Default: Local)
-  const [deliveryScope, setDeliveryScope] = useState("Local"); 
+  const [deliveryScope, setDeliveryScope] = useState("Local");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -41,12 +43,14 @@ export default function RegisterScreen({ navigation }) {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleRegister = async () => {
+const handleRegister = async () => {
     setError("");
     setMessage("");
 
+    // Required fields validation
     if (
       !shopName ||
+      !shopType ||
       !ownerName ||
       !phone ||
       !address ||
@@ -58,77 +62,83 @@ export default function RegisterScreen({ navigation }) {
       return;
     }
 
+    // Password validation
     if (password !== confirmPassword) {
       setError("Passwords do not match ❌");
       return;
     }
 
-    // கூகுள் முகவரியில் இருந்து புள்ளிகள் எடுக்கப்பட்டதா என்ற சரிபார்ப்பு
+    // Location validation
     if (!shopLat || !shopLon) {
-      setError("Please select a valid address from the dropdown list 📍");
+      setError(
+        "Please select a valid address from the dropdown list 📍"
+      );
       return;
     }
 
     setLoading(true);
 
     try {
-      const result = await createUserWithEmailAndPassword(
-        auth,
-        email.trim(),
-        password
+      // 🌟 சரியாக ரீஜியனுடன் (Region) Functions-ஐ இன்ஸ்டன்ஸ் செய்தல்
+      const functions = getFunctions(auth.app, "us-central1");
+      const registerSeller = httpsCallable(functions, "registerSeller");
+
+      const payload = {
+        email: email.trim(),
+        password: password,
+        shopName: shopName.trim(),
+        shopType: shopType,
+        ownerName: ownerName.trim(),
+        phone: phone.trim(),
+        address: address,
+        shopLat: Number(shopLat),
+        shopLon: Number(shopLon),
+        deliveryScope: deliveryScope,
+      };
+
+      const result = await registerSeller(payload);
+
+      console.log("Register response:", result.data);
+
+      setMessage(
+        `Account created successfully 🎉\nShop UID: ${result.data.uid}`
       );
 
-      // 🔥 Firestore-ல் டேட்டா சேமிப்பு அமைப்பு
-      await setDoc(
-        doc(db, "users", result.user.uid),
-        {
-          shopName,
-          ownerName,
-          phone,
-          email: email.trim(),
-          role: "seller",
-          
-          // 📍 வாடிக்கையாளர் ஆப் 3 கிமீ பில்டருக்கு தேவையான சரியான ஸ்ட்ரக்சர்
-          address: {
-            fullAddress: address,
-            lat: Number(shopLat),
-            lon: Number(shopLon)
-          },
-
-          // 🚚 பயனர் தேர்ந்தெடுத்த டெலிவரி ஸ்கோப் (Local / Global)
-          deliveryScope: deliveryScope, 
-
-          trialStart: Date.now(),
-          subscriptionPlan: "Free Trial",
-          subscriptionActive: true,
-          subscriptionExpiry: Date.now() + 30 * 24 * 60 * 60 * 1000,
-          createdAt: new Date().toISOString(),
-        }
-      );
-
-      setMessage("Account created successfully 🎉");
       setTimeout(() => {
         navigation.navigate("Login");
-      }, 1500);
+      }, 1800);
 
     } catch (e) {
-      console.log("ERROR 👉", e);
-      setError(e.message);
+      console.error("Registration error:", e);
+      // விரிவான எரர் மெசேஜைக் காட்டவும்
+      setError(e?.message || "Failed to create account.");
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    <SafeAreaView 
+      style={{ 
+        flex: 1, 
+        backgroundColor: "#eef2ff",
+        paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0 
+      }}
     >
-      <KeyboardAwareScrollView
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={styles.container}>
+        <KeyboardAwareScrollView
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: "center",
+            paddingVertical: 40,
+            paddingHorizontal: 25,
+          }}
+        >
           <View style={styles.card}>
             <Image
               source={require("../assets/shopping2.jpg")}
@@ -137,7 +147,9 @@ export default function RegisterScreen({ navigation }) {
             />
 
             <Text style={styles.title}>Sign Up</Text>
-            <Text style={styles.subtitle}>Create your shop account to continue</Text>
+            <Text style={styles.subtitle}>
+              Create your shop account to continue
+            </Text>
 
             <TextInput
               placeholder="Shop Name"
@@ -145,6 +157,37 @@ export default function RegisterScreen({ navigation }) {
               style={styles.input}
               onChangeText={setShopName}
             />
+
+            {/* SHOP TYPE DROPDOWN */}
+            <TouchableOpacity
+              style={[styles.input, { justifyContent: 'center' }]}
+              onPress={() => setShowTypeDropdown(!showTypeDropdown)}
+              activeOpacity={0.7}
+            >
+              <Text style={{ color: shopType ? "#111827" : "#94a3b8", fontSize: 15 }}>
+                {shopType ? shopType : "Select Shop Type"}
+              </Text>
+            </TouchableOpacity>
+
+            {showTypeDropdown && (
+              <View style={styles.dropdownContainer}>
+                {shopTypes.map((type, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    style={[
+                      styles.dropdownItem,
+                      index === shopTypes.length - 1 && { borderBottomWidth: 0 }
+                    ]}
+                    onPress={() => {
+                      setShopType(type);
+                      setShowTypeDropdown(false);
+                    }}
+                  >
+                    <Text style={styles.dropdownText}>{type}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
 
             <TextInput
               placeholder="Owner Name"
@@ -161,7 +204,6 @@ export default function RegisterScreen({ navigation }) {
               onChangeText={setPhone}
             />
 
-            {/* 📍 கூகுள் மேப் சர்ச் பார் பகுதி */}
             <Text style={styles.sectionLabel}>Shop Location Address 🔍</Text>
             <View style={{ zIndex: 1000, marginBottom: 15 }}>
               <GooglePlacesAutocomplete
@@ -173,70 +215,33 @@ export default function RegisterScreen({ navigation }) {
                 nearbyPlacesAPI="GooglePlacesSearch"
                 onPress={(data, details = null) => {
                   setAddress(details?.formatted_address || data?.description || "");
-                  
-                  // ஜியோமிதி புள்ளிகளை (Coordinates) பிரித்தெடுத்தல்
                   if (details?.geometry?.location) {
                     setShopLat(details.geometry.location.lat);
                     setShopLon(details.geometry.location.lng);
                   }
                 }}
                 query={{
-                  key: 'AIzaSyDh7LkmivSR8am3gPvq0psCR8IH499wj28',
-                  language: 'en',
-                  components: 'country:in',
+                  key: "AIzaSyDh7LkmivSR8am3gPvq0psCR8IH499wj28",
+                  language: "en",
+                  components: "country:in",
                 }}
                 styles={{
                   textInput: styles.input,
                   listView: {
-                    backgroundColor: '#fff',
+                    backgroundColor: "#fff",
                     borderRadius: 15,
                     borderWidth: 1,
-                    borderColor: '#e2e8f0',
+                    borderColor: "#e2e8f0",
                   },
                 }}
               />
             </View>
 
             {address ? (
-            <Text
-              style={{
-                marginTop: 10,
-                color: '#16a34a',
-              }}>
-              📍 {typeof address === "object"
-                ? address.fullAddress
-                : address}
-            </Text>
-          ) : null}
-
-            {/* 🚚 புதிய பட்டன் செக்ஷன்: Local / Global Delivery Selector */}
-            <Text style={styles.sectionLabel}>Delivery Scope</Text>
-            <View style={styles.toggleContainer}>
-              <TouchableOpacity 
-                activeOpacity={0.8}
-                style={[styles.toggleBtn, deliveryScope === "Local" && styles.activeToggleBtn]}
-                onPress={() => setDeliveryScope("Local")}
-              >
-                <Text style={[styles.toggleBtnText, deliveryScope === "Local" && styles.activeToggleBtnText]}>
-                  📍 Local (Nearby)
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                activeOpacity={0.8}
-                style={[styles.toggleBtn, deliveryScope === "Global" && styles.activeToggleBtn]}
-                onPress={() => setDeliveryScope("Global")}
-              >
-                <Text style={[styles.toggleBtnText, deliveryScope === "Global" && styles.activeToggleBtnText]}>
-                  🌍 Global (All Over)
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.toggleHelpTxt}>
-              {deliveryScope === "Local" 
-                ? "Your shop will be shown to customers within 3 KM radius." 
-                : "Your shop will be visible to everyone regardless of distance."}
-            </Text>
+              <Text style={{ marginTop: 10, color: "#16a34a", marginBottom: 10 }}>
+                📍 {typeof address === "object" ? address.fullAddress : address}
+              </Text>
+            ) : null}
 
             <TextInput
               placeholder="Email"
@@ -263,16 +268,8 @@ export default function RegisterScreen({ navigation }) {
               onChangeText={setConfirmPassword}
             />
 
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleRegister}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.btnText}>Create Account</Text>
-              )}
+            <TouchableOpacity style={styles.button} onPress={handleRegister} disabled={loading}>
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Create Account</Text>}
             </TouchableOpacity>
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -282,19 +279,13 @@ export default function RegisterScreen({ navigation }) {
               <Text style={styles.link}>← Back to Login</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </KeyboardAwareScrollView>
-    </KeyboardAvoidingView>
+        </KeyboardAwareScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    padding: 25,
-    backgroundColor: "#eef2ff",
-  },
   card: {
     backgroundColor: "#ffffff",
     borderRadius: 35,
@@ -328,7 +319,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#475569",
     marginBottom: 8,
-    marginLeft: 4
+    marginLeft: 4,
   },
   input: {
     backgroundColor: "#f8fafc",
@@ -340,47 +331,28 @@ const styles = StyleSheet.create({
     borderColor: "#e2e8f0",
     fontSize: 15,
   },
-  liveLocationText: {
-    fontSize: 13,
-    color: '#16a34a',
-    fontWeight: '600',
-    marginBottom: 15,
-    paddingHorizontal: 4
-  },
-  // 🚚 Delivery Selector Styles
-  toggleContainer: {
-    flexDirection: "row",
-    backgroundColor: "#f1f5f9",
-    padding: 5,
-    borderRadius: 14,
-    marginBottom: 6,
+  dropdownContainer: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#e2e8f0"
-  },
-  toggleBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderRadius: 10,
-  },
-  activeToggleBtn: {
-    backgroundColor: "#2563eb",
-  },
-  toggleBtnText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#475569"
-  },
-  activeToggleBtnText: {
-    color: "#fff",
-    fontWeight: "700"
-  },
-  toggleHelpTxt: {
-    fontSize: 11,
-    color: "#64748b",
+    borderColor: "#e2e8f0",
     marginBottom: 15,
-    marginLeft: 4,
-    fontStyle: "italic"
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  dropdownItem: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f1f5f9",
+  },
+  dropdownText: {
+    fontSize: 15,
+    color: "#334155",
   },
   button: {
     backgroundColor: "#2563eb",

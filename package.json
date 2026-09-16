@@ -10,8 +10,11 @@
     "test": "jest"
   },
   "dependencies": {
+    "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^1.24.0",
     "@react-native-community/datetimepicker": "^9.1.0",
+    "@react-native-firebase/app": "^26.2.0",
+    "@react-native-firebase/messaging": "^26.2.0",
     "@react-native/new-app-screen": "0.85.2",
     "@react-navigation/bottom-tabs": "^7.15.11",
     "@react-navigation/material-top-tabs": "^7.4.24",
@@ -20,6 +23,7 @@
     "expo-print": "^57.0.0",
     "expo-sharing": "^57.0.1",
     "firebase": "^12.12.1",
+    "notifee": "^0.0.1",
     "react": "19.2.3",
     "react-native": "0.85.2",
     "react-native-chart-kit": "^6.12.2",
@@ -46,7 +50,7 @@
     "react-native-vector-icons": "^10.3.0",
     "react-native-vision-camera": "^4.7.3",
     "react-native-webview": "^14.0.1",
-    "react-native-worklets": "^0.9.1"
+    "react-native-worklets": "^0.10.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

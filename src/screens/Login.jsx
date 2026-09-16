@@ -1,7 +1,6 @@
-import React, {
-  useState,
-  useRef,
-} from "react";import {
+import React, { useState, useRef } from "react";
+
+import {
   View,
   Text,
   TextInput,
@@ -12,9 +11,12 @@ import React, {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  SafeAreaView,
+  StatusBar,
 } from "react-native";
-import { saveSession  } from "../../utils/session";
-import { auth, db } from "../firebaseConfig";
+
+import { saveSession } from "../utils/session";
+import { auth, db } from "../utils/firebaseConfig";
 
 import {
   signInWithEmailAndPassword,
@@ -23,178 +25,147 @@ import {
 
 import { doc, getDoc } from "firebase/firestore";
 
-export default function LoginScreen({ navigation }) {
+import { saveSellerFCMToken } from "../utils/fcmToken";
 
+export default function LoginScreen({ navigation }) {
   const passwordRef = useRef(null);
 
   const [email, setEmail] = useState("");
-
-  const [password, setPassword] =
-    useState("");
-
-  const [error, setError] =
-    useState("");
-
-  const [message, setMessage] =
-    useState("");
-
-  const [loading, setLoading] =
-    useState(false);
-
-  const [showPassword, setShowPassword] =
-    useState(false);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async () => {
-
     setError("");
     setLoading(true);
 
     try {
+      // 1. Firebase Authentication
+      const result = await signInWithEmailAndPassword(
+        auth,
+        email.trim(),
+        password
+      );
 
-      const result =
-        await signInWithEmailAndPassword(
-          auth,
-          email,
-          password
-        );
+      const uid = result.user.uid;
 
-console.log(
-  "LOGIN USER =>",
-  auth.currentUser
-);
+      console.log("✅ LOGIN SUCCESS");
+      console.log("👤 SELLER UID:", uid);
 
+      // 2. Check seller document
       const snap = await getDoc(
-        doc(db, "users", result.user.uid)
+        doc(db, "users", uid)
       );
 
       if (!snap.exists()) {
-
         await auth.signOut();
 
-        setError(
-          "User not registered ❌"
-        );
-
+        setError("User not registered ❌");
         setLoading(false);
-
         return;
       }
 
       const userData = snap.data();
-
       const now = Date.now();
 
-     if (
-  userData.subscriptionExpiry > now
-) {
+      try {
+  console.log("🔔 Starting seller FCM setup...");
 
-  // ✅ SAVE LOGIN
-await saveSession({
-
-  route: "Dashboard",
-
-  uid: result.user.uid,
-
-});
-
-  navigation.replace(
-    "Dashboard"
-  );
-
-} else {
-
-  // ✅ SAVE LOGIN
-await saveSession({
-
-  route: "Subscription",
-
-  uid: result.user.uid,
-
-});
-
-  navigation.replace(
-    "Subscription"
+  await saveSellerFCMToken(uid);
+        
+  console.log("✅ Seller FCM setup completed");
+} catch (fcmError) {
+  console.log(
+    "⚠️ FCM setup failed:",
+    fcmError
   );
 }
 
+      // 4. Existing subscription logic
+      if (userData.subscriptionExpiry > now) {
+        await saveSession({
+          route: "Dashboard",
+          uid: uid,
+        });
+
+        navigation.replace("Dashboard");
+      } else {
+        await saveSession({
+          route: "Subscription",
+          uid: uid,
+        });
+
+        navigation.replace("Subscription");
+      }
     } catch (e) {
+      console.log("❌ LOGIN ERROR:", e);
 
-  console.log("LOGIN ERROR =>", e);
-
-  if (e.code === "auth/user-not-found") {
-    setError("User not found ❌");
-  }
-
-  else if (e.code === "auth/wrong-password") {
-    setError("Wrong password ❌");
-  }
-
-  else if (e.code === "auth/invalid-credential") {
-    setError("Invalid credential ❌");
-  }
-
-  else {
-    setError(e.message);
-  }
-}
+      if (e.code === "auth/user-not-found") {
+        setError("User not found ❌");
+      } else if (e.code === "auth/wrong-password") {
+        setError("Wrong password ❌");
+      } else if (e.code === "auth/invalid-credential") {
+        setError("Invalid credential ❌");
+      } else {
+        setError(e.message);
+      }
+    }
 
     setLoading(false);
   };
 
-  const handleForgotPassword =
-    async () => {
+  const handleForgotPassword = async () => {
+    setError("");
+    setMessage("");
 
-      setError("");
-      setMessage("");
+    if (!email) {
+      setError("Enter email first ⚠");
+      return;
+    }
 
-      if (!email) {
+    try {
+      await sendPasswordResetEmail(
+        auth,
+        email.trim()
+      );
 
-        setError(
-          "Enter email first ⚠"
-        );
-
-        return;
-      }
-
-      try {
-
-        await sendPasswordResetEmail(
-          auth,
-          email
-        );
-
-        setMessage(
-          "Reset link sent 📩"
-        );
-
-      } catch (e) {
-
-        setError("Failed ❌");
-      }
-    };
+      setMessage("Reset link sent 📩");
+    } catch (e) {
+      setError("Failed ❌");
+    }
+  };
 
   return (
-
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={
-        Platform.OS === "ios"
-          ? "padding"
-          : undefined
-      }
+    <SafeAreaView
+      style={{
+        flex: 1,
+        backgroundColor: "#eef2ff",
+        paddingTop:
+          Platform.OS === "android"
+            ? StatusBar.currentHeight
+            : 0,
+      }}
     >
-
-      <ScrollView
-        contentContainerStyle={{
-          flexGrow: 1,
-        }}
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={
+          Platform.OS === "ios"
+            ? "padding"
+            : undefined
+        }
       >
-
-        <View style={styles.container}>
-
+        <ScrollView
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: "center",
+            paddingVertical: 40,
+            paddingHorizontal: 25,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.card}>
-
             <Image
               source={require("../assets/shopping1.jpg")}
               style={styles.topImage}
@@ -206,8 +177,7 @@ await saveSession({
             </Text>
 
             <Text style={styles.subtitle}>
-              Enter valid email & password
-              to continue
+              Enter valid email & password to continue
             </Text>
 
             <TextInput
@@ -215,12 +185,12 @@ await saveSession({
               placeholderTextColor="#94a3b8"
               style={styles.input}
               value={email}
-              onChangeText={(text) =>
-                setEmail(text)
-              }
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
               returnKeyType="next"
               onSubmitEditing={() =>
-                passwordRef.current.focus()
+                passwordRef.current?.focus()
               }
             />
 
@@ -231,142 +201,101 @@ await saveSession({
               style={styles.input}
               secureTextEntry={!showPassword}
               value={password}
-              onChangeText={(text) =>
-                setPassword(text)
-              }
+              onChangeText={setPassword}
               returnKeyType="done"
               onSubmitEditing={handleLogin}
             />
 
             <TouchableOpacity
               onPress={() =>
-                setShowPassword(
-                  !showPassword
-                )
+                setShowPassword(!showPassword)
               }
             >
-
               <Text style={styles.showText}>
-                {
-                  showPassword
-                    ? "Hide Password"
-                    : "Show Password"
-                }
+                {showPassword
+                  ? "Hide Password"
+                  : "Show Password"}
               </Text>
-
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.button}
               onPress={handleLogin}
+              disabled={loading}
             >
-
               {loading ? (
-
-                <ActivityIndicator
-                  color="#fff"
-                />
-
+                <ActivityIndicator color="#fff" />
               ) : (
-
                 <Text style={styles.btnText}>
                   Login
                 </Text>
               )}
-
             </TouchableOpacity>
 
             {error ? (
-
               <Text style={styles.error}>
                 {error}
               </Text>
-
             ) : null}
 
             {message ? (
-
               <Text style={styles.success}>
                 {message}
               </Text>
-
             ) : null}
 
             <TouchableOpacity
-              onPress={
-                handleForgotPassword
-              }
+              onPress={handleForgotPassword}
             >
-
               <Text style={styles.link}>
                 Forgot Password?
               </Text>
-
             </TouchableOpacity>
 
-<TouchableOpacity
-  style={{
-    backgroundColor:"#16a34a",
-    padding:17,
-    borderRadius:18,
-    alignItems:"center",
-    marginTop:12
-  }}
-  onPress={() =>
-    navigation.navigate(
-      "DemoLogin"
-    )
-  }
->
-  <Text
-    style={{
-      color:"#fff",
-      fontWeight:"bold",
-      fontSize:16
-    }}
-  >
-    🚀 Try Demo
-  </Text>
-</TouchableOpacity>
+            <TouchableOpacity
+              style={{
+                backgroundColor: "#16a34a",
+                padding: 17,
+                borderRadius: 18,
+                alignItems: "center",
+                marginTop: 12,
+              }}
+              onPress={() =>
+                navigation.navigate("DemoLogin")
+              }
+            >
+              <Text
+                style={{
+                  color: "#fff",
+                  fontWeight: "bold",
+                  fontSize: 16,
+                }}
+              >
+                🚀 Try Demo
+              </Text>
+            </TouchableOpacity>
 
             <TouchableOpacity
               onPress={() =>
-                navigation.navigate(
-                  "Register"
-                )
+                navigation.navigate("Register")
               }
             >
-
               <Text style={styles.link}>
                 Register →
               </Text>
-
             </TouchableOpacity>
-
           </View>
-
-        </View>
-
-      </ScrollView>
-
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    padding: 25,
-    backgroundColor: "#eef2ff",
-  },
-
   card: {
     backgroundColor: "#ffffff",
     borderRadius: 35,
     padding: 25,
-
     shadowColor: "#000",
     shadowOpacity: 0.08,
     shadowRadius: 10,
@@ -418,7 +347,6 @@ const styles = StyleSheet.create({
     padding: 17,
     borderRadius: 18,
     alignItems: "center",
-
     shadowColor: "#2563eb",
     shadowOpacity: 0.3,
     shadowRadius: 10,
@@ -451,5 +379,4 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontWeight: "600",
   },
-
 });

@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
-import { auth, db } from "../firebaseConfig";
+import { auth, db } from "../utils/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { View, Text, TouchableOpacity, StyleSheet, Image, ScrollView, SafeAreaView, StatusBar, Dimensions } from "react-native"; 
-import { collection, onSnapshot, doc, getDoc } from "firebase/firestore";
-import Icon from "react-native-vector-icons/MaterialCommunityIcons";
+import { View, Text, TouchableOpacity, StyleSheet, Image, ScrollView, SafeAreaView, StatusBar, Dimensions, Platform, Alert } from "react-native";
+import { collection, onSnapshot, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFCMToken } from "../utils/notifications";
 import { LineChart, Grid } from "react-native-svg-charts";
 import SalesHistory from "./SalesHistory";
 import PurchaseHistory from "./PurchaseHistory";
 import InventoryScreen from "./InventoryScreen";
 import { useFocusEffect } from "@react-navigation/native";
-import { getSession } from "../../utils/session";
+import { getSession } from "../utils/session";
 import { useTheme } from "../theme/ThemeContext";
+import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
 export default function Dashboard({ navigation }) {
   const [image, setImage] = useState(null);
@@ -28,36 +29,40 @@ export default function Dashboard({ navigation }) {
   const [showShopModeMenu, setShowShopModeMenu] = useState(false);
   const [shopLogo, setShopLogo] = useState(null);
   const [isGlobalMode, setIsGlobalMode] = useState(false);
+  const [userRole, setUserRole] = useState("master");
 
   useEffect(() => {
     loadSession();
   }, []);
 
-  const loadSession = async () => {
-    const session = await getSession();
-    if (session?.uid) {
-      setUserUid(session.uid);
-    }
-  };
+const loadSession = async () => {
+  const session = await getSession();
+  if (session?.uid) {
+    setUserUid(session.uid);
+    setUserRole(session.role || "master"); // 🌟 Load user role
+  }
+};
 
-  const loadUserAndLogo = async (uid, modeIsGlobal) => {
+const loadUserAndLogo = async (uid, modeIsGlobal) => {
     const modeStr = modeIsGlobal ? "global" : "local";
     try {
       const snap = await getDoc(doc(db, "users", uid));
       if (snap.exists()) {
         const data = snap.data();
-        setUserPlan(data.subscriptionPlan || "Free Trial");
-        const targetShopName = data[`${modeStr}_shopName`] ? data[`${modeStr}_shopName`] : (data.shopName || "");
-        setShopName(targetShopName);
+        setShopName(data[`${modeStr}_shopName`] || data.shopName || "");
+        setShopLogo(data[`${modeStr}_shopLogo`] || data.shopLogo || null);
+        setImage(data[`${modeStr}_profileImage`] || data.profileImage || null);
       }
     } catch (err) {
-      console.log("Error loading user profile fields:", err);
+      console.log("Error loading data:", err);
     }
+    
+    // Fallback/Load robustly from AsyncStorage with proper mode prefix
+    const logo = await AsyncStorage.getItem(`${modeStr}_shopLogo_${uid}`) || await AsyncStorage.getItem(`shop_qr_code_${uid}`);
+    if (logo) setShopLogo(logo);
 
-    const logo = await AsyncStorage.getItem(`${modeStr}_shopLogo_${uid}`);
-    setShopLogo(logo || null);
     const profileImg = await AsyncStorage.getItem(`${modeStr}_profileImage_${uid}`);
-    setImage(profileImg || null);
+    if (profileImg) setImage(profileImg);
   };
 
   const checkModeAndLoad = async () => {
@@ -115,27 +120,28 @@ export default function Dashboard({ navigation }) {
     return new Date(ts);
   };
 
-const currentSalesData = sales.filter(s => {
-  const itemModeIsGlobal = s.isGlobalMode === true || s.appMode === "global" || s.isGlobalMode === "global";
-  return isGlobalMode ? itemModeIsGlobal : !itemModeIsGlobal;
-});
+// 1. Filter out valid current sales data, making sure total and profit are numbers
+  const currentSalesData = sales.filter(s => {
+    const itemModeIsGlobal = s.isGlobalMode === true || s.appMode === "global" || s.isGlobalMode === "global";
+    return isGlobalMode ? itemModeIsGlobal : !itemModeIsGlobal;
+  });
 
   const totalSales = currentSalesData.reduce((sum, s) => sum + (Number(s.total) || 0), 0);
-  const totalProfit = currentSalesData.reduce((sum, s) => sum + (Number(s.profit || s.total * 0.2) || 0), 0);
+  const totalProfit = currentSalesData.reduce((sum, s) => sum + (Number(s.profit) || (Number(s.total) * 0.2) || 0), 0);
 
   const todayProfit = currentSalesData
     .filter(s => {
       const d = getDate(s.createdAt);
       return d && d.toDateString() === today.toDateString();
     })
-    .reduce((sum, s) => sum + (Number(s.profit || s.total * 0.2) || 0), 0);
+    .reduce((sum, s) => sum + (Number(s.profit) || (Number(s.total) * 0.2) || 0), 0);
 
   const monthProfit = currentSalesData
     .filter(s => {
       const d = getDate(s.createdAt);
       return d && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
     })
-    .reduce((sum, s) => sum + (Number(s.profit || s.total * 0.2) || 0), 0);
+    .reduce((sum, s) => sum + (Number(s.profit) || (Number(s.total) * 0.2) || 0), 0);
 
   const displayProfit = profitView === "month" ? monthProfit : totalProfit;
   
@@ -153,31 +159,40 @@ const currentSalesData = sales.filter(s => {
     })
     .reduce((sum, s) => sum + (Number(s.total) || 0), 0);
 
+  // 2. Build running total arrays, ensuring absolutely NO NaN values leak through
   let runningChart = 0;
   const totalChartData = currentSalesData.map(s => {
-    runningChart += Number(s.profit || s.total * 0.2);
-    return runningChart;
+    const val = Number(s.profit) || (Number(s.total) * 0.2) || 0;
+    runningChart += val;
+    return isNaN(runningChart) ? 0 : runningChart; // Prevent NaN leaking
   });
 
   let monthRunning = 0;
-  const monthChartData = currentSalesData
+  const monthChartData = currentSalesData 
     .filter(s => {
       const d = getDate(s.createdAt);
       return d && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
     })
     .map(s => {
-      monthRunning += Number(s.profit || s.total * 0.2);
-      return monthRunning;
+      const val = Number(s.profit) || (Number(s.total) * 0.2) || 0;
+      runningChart += val;
+      monthRunning += val;
+      return isNaN(monthRunning) ? 0 : monthRunning; // Prevent NaN leaking
     });
 
-  const chartData = profitView === "month" ? (monthChartData.length ? monthChartData : [0]) : (totalChartData.length ? totalChartData : [0]);
+  // 3. Final structural sanitize check before passing to the Chart UI component
+  const rawChartData = profitView === "month" ? monthChartData : totalChartData;
+  const chartData = rawChartData.length > 0 && !rawChartData.every(val => val === 0) 
+    ? rawChartData.filter(v => !isNaN(v)) 
+    : [0, 0]; // Chart requires at least two coordinates to render paths beautifully without crashing
+
   const maxValue = Math.max(...chartData);
   let topAxis = maxValue <= 1000 ? 1000 : maxValue <= 3000 ? 3000 : maxValue <= 5000 ? 5000 : maxValue <= 6000 ? 6000 : maxValue <= 8000 ? 8000 : maxValue <= 10000 ? 10000 : Math.ceil(maxValue / 5000) * 5000;
   const yAxisLabels = [topAxis, Math.round(topAxis * 0.75), Math.round(topAxis * 0.50), Math.round(topAxis * 0.25), 0];
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <StatusBar backgroundColor="#f1f5f9" barStyle="dark-content" />
+      <StatusBar backgroundColor={theme.background} barStyle={darkMode ? "light-content" : "dark-content"} translucent={true} />
       <SafeAreaView style={[styles.safeTop, { backgroundColor: theme.background }]}>
         <View style={styles.topBar}>
           <View style={styles.leftTop}>
@@ -235,28 +250,33 @@ const currentSalesData = sales.filter(s => {
             </TouchableOpacity>
           </View>
 
-      {showProfileMenu && (
-        <View style={[styles.dropdownMenu, { backgroundColor: theme.card }]}>
-          <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Profile"); }}>
-            <Icon name="account-circle" size={20} color={theme.text} />
-            <Text style={[styles.dropdownText, { color: theme.text }]}>Profile</Text>
-          </TouchableOpacity>
-          
-          {/* 🌟 NEW SETTINGS OPTION */}
-          <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Settings"); }}>
-            <Icon name="cog-outline" size={20} color={theme.text} />
-            <Text style={[styles.dropdownText, { color: theme.text }]}>Settings</Text>
-          </TouchableOpacity>
+{showProfileMenu && (
+    <View style={[styles.dropdownMenu, { backgroundColor: theme.card }]}>
+      <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Profile"); }}>
+        <Icon name="account-circle" size={20} color={theme.text} />
+        <Text style={[styles.dropdownText, { color: theme.text }]}>Profile</Text>
+      </TouchableOpacity>
+      
+      {/* 🌟 STAFF CREATION */}
+      <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("StaffCreation"); }}>
+        <Icon name="account-plus-outline" size={20} color={theme.text} />
+        <Text style={[styles.dropdownText, { color: theme.text }]}>Staff Creation</Text>
+      </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.dropdownItem, { backgroundColor: userPlan === "Basic" ? "#2563EB" : userPlan === "Premium" ? "#16A34A" : userPlan === "Pro" ? "#FFD700" : "#6366F1", borderRadius: 12, marginHorizontal: 8, marginTop: 6, paddingVertical: 14, elevation: 5 }]}
-            onPress={() => { setShowProfileMenu(false); navigation.navigate("Subscription"); }}
-          >
-            <Icon name="diamond-stone" size={20} color={userPlan === "Premium" ? "#111827" : "#FFFFFF"} />
-            <Text style={[styles.dropdownText, { color: userPlan === "Premium" ? "#111827" : "#FFFFFF", fontWeight: "700" }]}>Upgrade</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      <TouchableOpacity style={styles.dropdownItem} onPress={() => { setShowProfileMenu(false); navigation.navigate("Settings"); }}>
+        <Icon name="cog-outline" size={20} color={theme.text} />
+        <Text style={[styles.dropdownText, { color: theme.text }]}>Settings</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.dropdownItem, { backgroundColor: userPlan === "Basic" ? "#2563EB" : userPlan === "Premium" ? "#16A34A" : userPlan === "Pro" ? "#FFD700" : "#6366F1", borderRadius: 12, marginHorizontal: 8, marginTop: 6, paddingVertical: 14, elevation: 5 }]}
+        onPress={() => { setShowProfileMenu(false); navigation.navigate("Subscription"); }}
+      >
+        <Icon name="diamond-stone" size={20} color={userPlan === "Premium" ? "#111827" : "#FFFFFF"} />
+        <Text style={[styles.dropdownText, { color: userPlan === "Premium" ? "#111827" : "#FFFFFF", fontWeight: "700" }]}>Upgrade</Text>
+      </TouchableOpacity>
+    </View>
+  )}
         </View>
       </SafeAreaView>
 
@@ -279,7 +299,9 @@ const currentSalesData = sales.filter(s => {
             <View style={styles.balanceCard}>
               <View>
                 <Text style={styles.balanceText}>{isGlobalMode ? "Global Delivered Sales" : "Total Sales"}</Text>
-                <Text style={styles.balanceAmount}>₹ {totalSales.toFixed(2)}</Text>
+               <Text style={styles.balanceAmount}>
+               {userRole === "employee" ? "🔒 Locked" : `₹ ${totalSales.toFixed(2)}`}
+               </Text>
               </View>
               <TouchableOpacity style={styles.journalBtn} onPress={() => navigation.navigate("JournalEntry")}>
                 <Icon name="book-outline" size={24} color="#6366f1" />
@@ -290,7 +312,9 @@ const currentSalesData = sales.filter(s => {
               <View style={styles.growthTopRow}>
                 <View>
                   <Text style={styles.growthTitle}>{isGlobalMode ? "Global Profit" : "Total Profit"}</Text>
-                  <Text style={styles.growthAmount}>₹ {displayProfit.toFixed(2)}</Text>
+                  <Text style={styles.growthAmount}>
+                   {userRole === "employee" ? "🔒 Locked" : `₹ ${displayProfit.toFixed(2)}`}
+                  </Text>
                   <View style={styles.percentBadge}><Text style={styles.growthPercent}>↑ +18.6%</Text></View>
                   <Text style={styles.lastMonthText}>vs last month</Text>
                 </View>
@@ -315,22 +339,28 @@ const currentSalesData = sales.filter(s => {
             {/* STATS */}
             <View style={styles.statsRow}>
               <View style={[styles.statCard, { backgroundColor: theme.card }]}>
-                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Today Sales</Text><Text style={styles.amount} numberOfLines={1}>₹ {todaySales.toFixed(2)}</Text></View>
+                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Today Sales</Text><Text style={styles.amount} numberOfLines={1}>{userRole === "employee" ? "🔒 Locked" : `₹ ${todaySales.toFixed(2)}`}</Text></View> 
                 <View style={styles.iconCirclePurple}><Icon name="shopping-outline" size={15} color="#6366f1" /></View>
               </View>
               <View style={[styles.statCard, { backgroundColor: theme.card }]}>
-                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Month Sales</Text><Text style={styles.amount} numberOfLines={1}>₹ {monthSales.toFixed(2)}</Text></View>
+                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Month Sales</Text><Text style={styles.amount} numberOfLines={1}>
+  {userRole === "employee" ? "🔒 Locked" : `₹ ${monthSales.toFixed(2)}`}
+</Text></View>
                 <View style={styles.iconCirclePurple}><Icon name="calendar-month-outline" size={15} color="#6366f1" /></View>
               </View>
             </View>
 
             <View style={styles.statsRow}>
               <View style={[styles.statCard, { backgroundColor: theme.card }]}>
-                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Today Profit</Text><Text style={styles.amountGreen} numberOfLines={1}>₹ {todayProfit.toFixed(2)}</Text></View>
+                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Today Profit</Text><Text style={styles.amountGreen} numberOfLines={1}>
+  {userRole === "employee" ? "🔒 Locked" : `₹ ${todayProfit.toFixed(2)}`}
+</Text></View>
                 <View style={styles.iconCircleGreen}><Icon name="trending-up" size={15} color="#16a34a" /></View>
               </View>
               <View style={[styles.statCard, { backgroundColor: theme.card }]}>
-                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Month Profit</Text><Text style={styles.amountGreen} numberOfLines={1}>₹ {monthProfit.toFixed(2)}</Text></View>
+                <View style={{ flex: 1 }}><Text style={styles.statTitle}>Month Profit</Text><Text style={styles.amountGreen} numberOfLines={1}>
+  {userRole === "employee" ? "🔒 Locked" : `₹ ${monthProfit.toFixed(2)}`}
+</Text></View>
                 <View style={styles.iconCircleGreen}><Icon name="cash-multiple" size={15} color="#16a34a" /></View>
               </View>
             </View>
@@ -406,12 +436,14 @@ const styles = StyleSheet.create({
   axisText: { color: "#dbeafe", fontSize: 13, marginBottom: 28, marginLeft: 200 },
   iconCirclePurple: { width: 34, height: 34, borderRadius: 24, backgroundColor: "#eef2ff", justifyContent: "center", alignItems: "center" },
   iconCircleGreen: { width: 34, height: 34, borderRadius: 24, backgroundColor: "#eaf8ef", justifyContent: "center", alignItems: "center" },
-  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 30, marginBottom: 10 },
+  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 5, marginBottom: 10 },
   leftTop: { flex: 1, marginRight: 10, position: "relative" },
   shopTitle: { fontSize: 24, fontWeight: "800" },
   topRight: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", width: 180 },
-  safeTop: { paddingTop: 10, paddingHorizontal: 20 },
-  modalBg: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center" },
+safeTop: { 
+  paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 15 : 40, 
+  paddingHorizontal: 20 
+},  modalBg: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center" },
   newModalBox: { width: "80%", backgroundColor: "#ffffff", borderRadius: 25, padding: 20, shadowColor: "#000", shadowOpacity: 0.2, shadowRadius: 15, elevation: 15 },
   modalTitle: { fontSize: 18, fontWeight: "700", color: "#111827", textAlign: "center", marginBottom: 15 },
   modalOption: { flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 12, borderRadius: 12, marginBottom: 10, backgroundColor: "#f8fafc" },

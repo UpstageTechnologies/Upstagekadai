@@ -17,7 +17,7 @@ export const ThemeProvider = ({
 }: any) => {
 
   const [darkMode, setDarkMode] =
-    useState(true);
+    useState(false);
 
   const theme =
     darkMode

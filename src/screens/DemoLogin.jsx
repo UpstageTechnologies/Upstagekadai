@@ -13,8 +13,8 @@ import React, {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { saveSession  } from "../../utils/session";
-import { auth, db } from "../firebaseConfig";
+import { saveSession  } from "../utils/session";
+import { auth, db } from "../utils/firebaseConfig";
 
 import {
   signInWithEmailAndPassword,

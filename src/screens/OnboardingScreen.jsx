@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { auth } from "../firebaseConfig";
+import { auth } from "../utils/firebaseConfig";
 import {
   View,
   Text,
@@ -127,7 +127,7 @@ if (auth.currentUser) {
 
 } else {
 
-  navigation.replace("Login");
+  navigation.replace("LoginRoleSelection");
 }
           }
         }}

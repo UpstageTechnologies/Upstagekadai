@@ -7,18 +7,20 @@ import {
   Modal,
   ScrollView,
   TextInput,
-  StyleSheet
+  StyleSheet,
+  Platform,   
+  StatusBar
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 
-import { auth, db } from "../firebaseConfig";
+import { auth, db } from "../utils/firebaseConfig";
 import { collection, onSnapshot, doc, getDoc } from "firebase/firestore";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import RNFS from "react-native-fs";
 import RNPrint from "react-native-print";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
-import { getSession } from "../../utils/session";
+import { getSession } from "../utils/session";
 import { ThemeContext } from "../theme/ThemeContext";
 
 export default function SalesHistory({ appMode }) {
@@ -221,8 +223,16 @@ const html = `
   const totalPages = Math.ceil(filteredSales.length / PAGE_SIZE);
   const paginatedSales = filteredSales.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
-  return (
-    <View style={{ flex: 1, backgroundColor: theme.background, padding: 20 }}>
+return (
+    <View 
+      style={{ 
+        flex: 1, 
+        backgroundColor: theme.background, 
+        paddingHorizontal: 20,
+        paddingBottom: 20,
+        paddingTop: Platform.OS === 'android' ? 2 : 6
+      }}
+    >
       <Text style={{ fontSize: 20, fontWeight: "700", marginBottom: 10, color: theme.text }}>
         Sales History ({currentMode === "global" ? "Global Shop" : "Local Shop"})
       </Text>
@@ -278,7 +288,7 @@ const html = `
           showsVerticalScrollIndicator={false}
           nestedScrollEnabled={true} 
           overScrollMode="never"
-          contentContainerStyle={{ paddingBottom: 20, paddingHorizontal: 4 }} 
+          contentContainerStyle={{ paddingBottom: 55, paddingHorizontal: 2 }} 
           renderItem={({ item }) => {
             const currentBillNo = String(item.billNo || item.invoiceId || "");
             const isOnlineSale = currentBillNo.startsWith("KADAI-") || currentBillNo.startsWith("ONL-") || item.paymentMode === "ONLINE";

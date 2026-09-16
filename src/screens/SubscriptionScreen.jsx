@@ -1,13 +1,15 @@
 import React, { useContext, useEffect, useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert, SafeAreaView, StatusBar } from "react-native";
-import { auth, db } from "../firebaseConfig";
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert, StatusBar, Platform } from "react-native";
+import { auth, db } from "../utils/firebaseConfig";
 import RazorpayCheckout from "react-native-razorpay";
 import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { ThemeContext } from "../theme/ThemeContext";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SubscriptionScreen({ navigation, route }) {  
   const { theme } = useContext(ThemeContext);
+  const insets = useSafeAreaInsets();
   const trialActive = route?.params?.trialActive || false;
   const [currentPlan, setCurrentPlan] = useState("Free Trial");
 
@@ -53,9 +55,9 @@ export default function SubscriptionScreen({ navigation, route }) {
   const subscribe = async (plan) => {
     const options = {
       description: `${plan.name} Subscription`,
-      image: "https://yourlogo.com/logo.png", // உங்கள் லோகோ URL
+      image: "https://yourlogo.com/logo.png",
       currency: "INR",
-      key: "rzp_test_RqckwEGqKZFqMk", // உங்களுடைய Razorpay Key
+      key: "rzp_test_RqckwEGqKZFqMk",
       amount: Number(plan.price) * 100,
       name: "SparrowMart",
       prefill: {
@@ -69,17 +71,25 @@ export default function SubscriptionScreen({ navigation, route }) {
     try {
       const data = await RazorpayCheckout.open(options);
       const expiry = Date.now() + plan.days * 24 * 60 * 60 * 1000;
+      
+      const userRef = doc(db, "users", auth.currentUser.uid);
+      const userSnap = await getDoc(userRef);
+      let assignedUid = userSnap.data()?.customShopUid;
+      
+      if (!assignedUid) {
+        assignedUid = `UID-${Math.floor(100000 + Math.random() * 900000)}`;
+      }
 
-      await updateDoc(doc(db, "users", auth.currentUser.uid), {
+      await updateDoc(userRef, {
         subscriptionPlan: plan.name,
         subscriptionActive: true,
         subscriptionExpiry: expiry,
+        customShopUid: assignedUid,
         razorpayPaymentId: data.razorpay_payment_id,
-        // Basic பிளானுக்கு மட்டும் லிமிட் செட் செய்யப்படுகிறது
         scanLimitPerDay: plan.name === "Basic" ? 5 : -1 
       });
 
-      Alert.alert("Payment Success ✅", `${plan.name} Plan Activated Successfully!`);
+      Alert.alert("Payment Success ✅", `${plan.name} Plan Activated Successfully! UID: ${assignedUid}`);
       navigation.replace("Dashboard");
     } catch (error) {
       Alert.alert("Payment Failed ❌", "Transaction could not be completed. Please try again.");
@@ -88,13 +98,13 @@ export default function SubscriptionScreen({ navigation, route }) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
-      <StatusBar barStyle={theme.darkMode ? "light-content" : "dark-content"} />
+    <View style={[styles.container, { backgroundColor: theme.background, paddingTop: insets.top }]}>
+      <StatusBar barStyle={theme.darkMode ? "light-content" : "dark-content"} backgroundColor={theme.background} translucent />
       
       <View style={styles.header}>
         <Text style={[styles.title, { color: theme.text }]}>Choose Your Plan</Text>
         <Text style={[styles.subtitle, { color: theme.subText || "#64748b" }]}>
-          {trialActive ? "🎉 Your 7 Days Free Trial Started" : "⚠️ Upgrade to avoid business interruptions"}
+          {trialActive ? "🎉 Your Free Trial Started" : "⚠️ Upgrade to unlock/renew your Shop UID"}
         </Text>
         <View style={styles.currentPlanBadge}>
           <Text style={styles.currentPlanText}>Current Active Plan: {currentPlan.toUpperCase()}</Text>
@@ -149,13 +159,13 @@ export default function SubscriptionScreen({ navigation, route }) {
           </TouchableOpacity>
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { paddingHorizontal: 20, paddingTop: 15, alignItems: "center" },
+  header: { paddingHorizontal: 20, paddingTop: 10, alignItems: "center" },
   title: { fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
   subtitle: { fontSize: 14, marginTop: 4, textAlign: "center", fontWeight: "500" },
   currentPlanBadge: { backgroundColor: "rgba(99,102,241,0.1)", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginTop: 12 },

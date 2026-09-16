@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native"; 
 
-import { auth, db } from "../firebaseConfig";
+import { auth, db } from "../utils/firebaseConfig";
 import {
   collection,
   onSnapshot,
@@ -238,7 +238,13 @@ const html = `
   const paginatedItems = filteredItems.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.background, padding: 20 }}>
+    <View style={{ 
+  flex: 1, 
+  backgroundColor: theme.background, 
+  paddingHorizontal: 16,
+  paddingBottom: 60,  // <-- Intha space pagination-kku keela correct-aa irrukkum
+  paddingTop: Platform.OS === 'android' ? 2 : 6  // <-- Mela irrukkura extra space-ah remove pannum
+}}>
       <Text style={{ fontSize: 24, fontWeight: "700", marginBottom: 15, color: theme.text }}>
         Invoice History ({currentMode === "global" ? "Global" : "Local"})
       </Text>
@@ -289,7 +295,7 @@ const html = `
           keyExtractor={item => item.billNo || item.id}
           showsVerticalScrollIndicator={false}
           nestedScrollEnabled={true}
-          contentContainerStyle={{ paddingBottom: 20, paddingHorizontal: 4 }}
+          contentContainerStyle={{ paddingBottom: 55, paddingHorizontal: 2 }}
           renderItem={({ item }) => (
             <TouchableOpacity
               activeOpacity={0.9}
