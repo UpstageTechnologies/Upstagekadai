@@ -1,26 +1,26 @@
-import React, { useEffect } from "react";
-import { StatusBar, useColorScheme } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  StatusBar,
+  useColorScheme,
+  View,
+  Text,
+  StyleSheet,
+  Animated,
+  Platform,
+} from "react-native";
 
 import {
   NavigationContainer,
   createNavigationContainerRef,
 } from "@react-navigation/native";
 
-import notifee, {
-  EventType,
-} from "@notifee/react-native";
+import notifee, { EventType } from "@notifee/react-native";
 
-import {
-  createNativeStackNavigator,
-} from "@react-navigation/native-stack";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
-import {
-  SafeAreaProvider,
-} from "react-native-safe-area-context";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import {
-  ThemeProvider,
-} from "./src/theme/ThemeContext";
+import { ThemeProvider } from "./src/theme/ThemeContext";
 
 import {
   getMessaging,
@@ -29,6 +29,8 @@ import {
   getInitialNotification as getFCMInitialNotification,
 } from "@react-native-firebase/messaging";
 
+import NetInfo from "@react-native-community/netinfo";
+import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
 // ======================================================
 // Screens
@@ -51,10 +53,8 @@ import JournalEntry from "./src/screens/JournalEntry";
 import DemoLogin from "./src/screens/DemoLogin";
 import OrdersScreen from "./src/screens/OrdersScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
-import LoginRoleSelection from "./src/screens/LoginRoleSelection";
 import StaffCreationScreen from "./src/screens/StaffCreation";
 import StaffLoginScreen from "./src/screens/StaffLogin";
-
 
 // ======================================================
 // Notification Service
@@ -65,20 +65,68 @@ import {
   displayNotification,
 } from "./src/utils/notification/notifications";
 
+// ======================================================
+// Global Offline Banner Component
+// ======================================================
+
+function OfflineBanner() {
+  const [isOffline, setIsOffline] = useState(false);
+  const slideAnim = useRef(new Animated.Value(-120)).current;
+
+  const updateNetworkStatus = (state) => {
+    const offline =
+      state.isConnected === false ||
+      (state.isConnected === true && state.isInternetReachable === false);
+    setIsOffline(offline);
+
+    Animated.spring(slideAnim, {
+      toValue: offline ? 0 : -120,
+      useNativeDriver: true,
+      bounciness: 4,
+    }).start();
+  };
+
+  useEffect(() => {
+    NetInfo.fetch().then(updateNetworkStatus);
+    const unsubscribe = NetInfo.addEventListener(updateNetworkStatus);
+
+    return () => unsubscribe();
+  }, [slideAnim]);
+
+  return (
+    <Animated.View
+      pointerEvents={isOffline ? "auto" : "none"}
+      style={[
+        styles.offlineBanner,
+        {
+          transform: [{ translateY: slideAnim }],
+        },
+      ]}
+    >
+      <View style={styles.offlineContent}>
+        <Icon
+          name="wifi-off"
+          size={17}
+          color="#ffffff"
+          style={styles.offlineIcon}
+        />
+        <Text style={styles.offlineText}>
+          You are offline • Check your connection
+        </Text>
+      </View>
+    </Animated.View>
+  );
+}
 
 // ======================================================
-// Navigation
+// Navigation Reference & Helpers
 // ======================================================
 
 const Stack = createNativeStackNavigator();
 
-export const navigationRef =
-  createNavigationContainerRef();
+export const navigationRef = createNavigationContainerRef();
 
-  const openOrdersFromNotification = (
-  orderId,
-  status = ""
-) => {
+const openOrdersFromNotification = (orderId, status = "") => {
   if (!orderId) {
     console.log("⚠️ No orderId from notification");
     return;
@@ -109,7 +157,6 @@ export const navigationRef =
     });
 
     console.log("✅ RESET TO ORDERS SCREEN");
-
     return true;
   };
 
@@ -128,60 +175,27 @@ export const navigationRef =
   }, 10000);
 };
 
-
 function App() {
   const isDarkMode = useColorScheme() === "dark";
-
 
   // ====================================================
   // 🔔 NOTIFICATION SETUP
   // ====================================================
-useEffect(() => {
-  let unsubscribe: (() => void) | undefined;
+  useEffect(() => {
+    let unsubscribe;
 
-  const setupNotifications = async () => {
-    try {
-      console.log("=================================");
-      console.log("🔔 APP NOTIFICATION SETUP");
-      console.log("=================================");
+    const setupNotifications = async () => {
+      try {
+        console.log("=================================");
+        console.log("🔔 APP NOTIFICATION SETUP");
+        console.log("=================================");
 
-      // 1. Create notification channel
-      await createNotificationChannel();
+        await createNotificationChannel();
 
-      console.log(
-        "✅ Notification channel ready"
-      );
+        const messagingInstance = getMessaging();
 
-      // 2. Firebase Messaging instance
-      const messagingInstance =
-        getMessaging();
-
-      console.log(
-        "✅ Firebase Messaging instance ready"
-      );
-
-      // 3. Foreground FCM listener
-      unsubscribe = onMessage(
-        messagingInstance,
-        async remoteMessage => {
+        unsubscribe = onMessage(messagingInstance, async (remoteMessage) => {
           try {
-            console.log(
-              "================================="
-            );
-
-            console.log(
-              "📩 FOREGROUND FCM MESSAGE"
-            );
-
-            console.log(
-              "REMOTE MESSAGE:",
-              remoteMessage
-            );
-
-            console.log(
-              "================================="
-            );
-
             const title =
               remoteMessage?.notification?.title ||
               remoteMessage?.data?.title ||
@@ -192,433 +206,198 @@ useEffect(() => {
               remoteMessage?.data?.body ||
               "You have received a new order";
 
-            const orderId =
-              remoteMessage?.data?.orderId ||
-              "";
+            const orderId = remoteMessage?.data?.orderId || "";
+            const status = remoteMessage?.data?.status || "";
 
-            const status =
-              remoteMessage?.data?.status ||
-              "";
-
-            console.log(
-              "🔔 TITLE:",
-              title
-            );
-
-            console.log(
-              "🔔 BODY:",
-              body
-            );
-
-            console.log(
-              "🧾 ORDER ID:",
-              orderId
-            );
-
-            console.log(
-              "📦 STATUS:",
-              status
-            );
-
-            // 4. Show Notifee notification
             await displayNotification({
               title,
               body,
               orderId,
               status,
             });
-
-            console.log(
-              "✅ Foreground notification displayed"
-            );
           } catch (error) {
-            console.log(
-              "❌ Foreground notification error:",
-              error
-            );
+            console.log("❌ Foreground notification error:", error);
+          }
+        });
+      } catch (error) {
+        console.log("❌ Notification setup error:", error);
+      }
+    };
+
+    setupNotifications();
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, []);
+
+  // ======================================================
+  // 🔔 NOTIFICATION CLICK - APP OPEN / BACKGROUND
+  // ======================================================
+  useEffect(() => {
+    const messagingInstance = getMessaging();
+
+    const unsubscribeNotifee = notifee.onForegroundEvent(
+      async ({ type, detail }) => {
+        try {
+          if (type !== EventType.PRESS) return;
+
+          const orderId = detail.notification?.data?.orderId;
+          const status = detail.notification?.data?.status;
+          const screen = detail.notification?.data?.screen;
+
+          if (screen === "Orders" && orderId) {
+            openOrdersFromNotification(orderId, status);
+          }
+        } catch (error) {
+          console.log("❌ Notifee notification click error:", error);
+        }
+      }
+    );
+
+    const unsubscribeFCM = onNotificationOpenedApp(
+      messagingInstance,
+      (remoteMessage) => {
+        try {
+          const orderId = remoteMessage?.data?.orderId;
+          const status = remoteMessage?.data?.status;
+          const screen = remoteMessage?.data?.screen;
+
+          if (screen === "Orders" && orderId) {
+            openOrdersFromNotification(orderId, status);
+          }
+        } catch (error) {
+          console.log("❌ FCM notification click error:", error);
+        }
+      }
+    );
+
+    return () => {
+      unsubscribeNotifee();
+      unsubscribeFCM();
+    };
+  }, []);
+
+  // ======================================================
+  // 🚀 NOTIFICATION CLICK - APP COMPLETELY CLOSED
+  // ======================================================
+  useEffect(() => {
+    const checkInitialNotification = async () => {
+      try {
+        const notifeeInitial = await notifee.getInitialNotification();
+        if (notifeeInitial) {
+          const orderId = notifeeInitial.notification?.data?.orderId;
+          const status = notifeeInitial.notification?.data?.status;
+          const screen = notifeeInitial.notification?.data?.screen;
+
+          if (screen === "Orders" && orderId) {
+            openOrdersFromNotification(orderId, status);
+            return;
           }
         }
-      );
 
-      console.log(
-        "✅ Foreground FCM listener registered"
-      );
-    } catch (error) {
-      console.log(
-        "❌ Notification setup error:",
-        error
-      );
-    }
-  };
+        const messagingInstance = getMessaging();
+        const fcmInitial = await getFCMInitialNotification(messagingInstance);
+        if (fcmInitial) {
+          const orderId = fcmInitial?.data?.orderId;
+          const status = fcmInitial?.data?.status;
+          const screen = fcmInitial?.data?.screen;
 
-  setupNotifications();
-
-  // Cleanup
-  return () => {
-    if (unsubscribe) {
-      unsubscribe();
-
-      console.log(
-        "🧹 Foreground FCM listener removed"
-      );
-    }
-  };
-}, []);
-
-// ======================================================
-// 🔔 NOTIFICATION CLICK - APP OPEN / BACKGROUND
-// ======================================================
-
-useEffect(() => {
-  const messagingInstance = getMessaging();
-
-  // A) Notifee Foreground/Background Event Press Handler
-  const unsubscribeNotifee = notifee.onForegroundEvent(
-    async ({ type, detail }) => {
-      try {
-        if (type !== EventType.PRESS) {
-          return;
-        }
-
-        console.log("=================================");
-        console.log("👆 NOTIFEE NOTIFICATION CLICKED");
-        console.log("=================================");
-
-        const orderId = detail.notification?.data?.orderId;
-        const status = detail.notification?.data?.status;
-        const screen = detail.notification?.data?.screen;
-
-        console.log("🧾 CLICKED ORDER ID:", orderId);
-        console.log("📦 CLICKED STATUS:", status);
-        console.log("📱 CLICKED SCREEN:", screen);
-
-        if (screen === "Orders" && orderId) {
-          openOrdersFromNotification(orderId, status);
+          if (screen === "Orders" && orderId) {
+            openOrdersFromNotification(orderId, status);
+          }
         }
       } catch (error) {
-        console.log(
-          "❌ Notifee notification click error:",
-          error
-        );
+        console.log("❌ Initial notification error:", error);
       }
-    }
-  );
+    };
 
-  // B) FCM Background Notification Click Handler
-  const unsubscribeFCM = onNotificationOpenedApp(
-    messagingInstance,
-    remoteMessage => {
-      try {
-        console.log("=================================");
-        console.log("👆 FCM BACKGROUND NOTIFICATION CLICKED");
-        console.log("=================================");
-
-        const orderId = remoteMessage?.data?.orderId;
-        const status = remoteMessage?.data?.status;
-        const screen = remoteMessage?.data?.screen;
-
-        console.log("🧾 FCM CLICKED ORDER ID:", orderId);
-        console.log("📦 FCM CLICKED STATUS:", status);
-        console.log("📱 FCM CLICKED SCREEN:", screen);
-
-        if (screen === "Orders" && orderId) {
-          openOrdersFromNotification(orderId, status);
-        }
-      } catch (error) {
-        console.log(
-          "❌ FCM notification click error:",
-          error
-        );
-      }
-    }
-  );
-
-  return () => {
-    unsubscribeNotifee();
-    unsubscribeFCM();
-  };
-}, []);
-
-// ======================================================
-// 🚀 NOTIFICATION CLICK - APP COMPLETELY CLOSED
-// ======================================================
-
-useEffect(() => {
-  const checkInitialNotification = async () => {
-    try {
-      // ---------------------------------------------
-      // 1️⃣ NOTIFEE INITIAL NOTIFICATION
-      // ---------------------------------------------
-
-      const notifeeInitial =
-        await notifee.getInitialNotification();
-
-      if (notifeeInitial) {
-        const orderId =
-          notifeeInitial.notification?.data?.orderId;
-
-        const status =
-          notifeeInitial.notification?.data?.status;
-
-        const screen =
-          notifeeInitial.notification?.data?.screen;
-
-        console.log(
-          "🚀 NOTIFEE INITIAL ORDER:",
-          orderId
-        );
-
-        if (screen === "Orders" && orderId) {
-          openOrdersFromNotification(
-            orderId,
-            status
-          );
-
-          return;
-        }
-      }
-
-      // ---------------------------------------------
-      // 2️⃣ FCM INITIAL NOTIFICATION
-      // ---------------------------------------------
-
-      const messagingInstance =
-        getMessaging();
-
-      const fcmInitial =
-        await getFCMInitialNotification(
-          messagingInstance
-        );
-
-      if (fcmInitial) {
-        const orderId =
-          fcmInitial?.data?.orderId;
-
-        const status =
-          fcmInitial?.data?.status;
-
-        const screen =
-          fcmInitial?.data?.screen;
-
-        console.log(
-          "🚀 FCM INITIAL NOTIFICATION"
-        );
-
-        console.log(
-          "🧾 ORDER ID:",
-          orderId
-        );
-
-        console.log(
-          "📦 STATUS:",
-          status
-        );
-
-        console.log(
-          "📱 SCREEN:",
-          screen
-        );
-
-        if (
-          screen === "Orders" &&
-          orderId
-        ) {
-          openOrdersFromNotification(
-            orderId,
-            status
-          );
-        }
-      }
-
-    } catch (error) {
-      console.log(
-        "❌ Initial notification error:",
-        error
-      );
-    }
-  };
-
-  checkInitialNotification();
-}, []);
-
-
-
+    checkInitialNotification();
+  }, []);
 
   // ======================================================
-  // UI
+  // UI & NAVIGATION STACK
   // ======================================================
-
   return (
     <SafeAreaProvider>
-
-      <StatusBar
-        barStyle={
-          isDarkMode
-            ? "light-content"
-            : "dark-content"
-        }
-      />
-
+      <StatusBar barStyle={isDarkMode ? "light-content" : "dark-content"} />
 
       <ThemeProvider>
+        {/* 🌐 Global Offline Bar Across All Pages */}
+        <OfflineBanner />
 
         <NavigationContainer ref={navigationRef}>
-
           <Stack.Navigator
             initialRouteName="Splash"
             screenOptions={{
               headerShown: false,
             }}
           >
-
-            {/* Onboarding */}
-            <Stack.Screen
-              name="Onboarding"
-              component={OnboardingScreen}
-            />
-
-
-            {/* Splash */}
-            <Stack.Screen
-              name="Splash"
-              component={SplashScreen}
-            />
-
-
-            {/* Login Role Selection */}
-            <Stack.Screen
-              name="LoginRoleSelection"
-              component={LoginRoleSelection}
-            />
-
-
-            {/* Login */}
-            <Stack.Screen
-              name="Login"
-              component={Login}
-            />
-
-
-            {/* Staff Login */}
-            <Stack.Screen
-              name="StaffLogin"
-              component={StaffLoginScreen}
-            />
-
-
-            {/* Register */}
-            <Stack.Screen
-              name="Register"
-              component={Register}
-            />
-
-
-            {/* Trial */}
-            <Stack.Screen
-              name="Trial"
-              component={TrialScreen}
-            />
-
-
-            {/* Dashboard */}
-            <Stack.Screen
-              name="Dashboard"
-              component={Dashboard}
-            />
-
-
-            {/* Journal */}
-            <Stack.Screen
-              name="JournalEntry"
-              component={JournalEntry}
-            />
-
-
-            {/* Scan */}
-            <Stack.Screen
-              name="Scan"
-              component={ScanScreen}
-            />
-
-
-            {/* Sales */}
-            <Stack.Screen
-              name="Sales"
-              component={SalesScreen}
-            />
-
-
-            {/* Sales History */}
-            <Stack.Screen
-              name="SalesHistory"
-              component={SalesHistory}
-            />
-
-
-            {/* Purchase History */}
-            <Stack.Screen
-              name="PurchaseHistory"
-              component={PurchaseHistory}
-            />
-
-
-            {/* Inventory */}
-            <Stack.Screen
-              name="Inventory"
-              component={InventoryScreen}
-            />
-
-
-            {/* Subscription */}
-            <Stack.Screen
-              name="Subscription"
-              component={SubscriptionScreen}
-            />
-
-
-            {/* Demo Login */}
-            <Stack.Screen
-              name="DemoLogin"
-              component={DemoLogin}
-            />
-
-
-            {/* Staff Creation */}
-            <Stack.Screen
-              name="StaffCreation"
-              component={StaffCreationScreen}
-            />
-
-
-            {/* Profile */}
-            <Stack.Screen
-              name="Profile"
-              component={ProfileScreen}
-            />
-
-
-            {/* Settings */}
-            <Stack.Screen
-              name="Settings"
-              component={SettingsScreen}
-            />
-
-
-            {/* Orders */}
-            <Stack.Screen
-              name="Orders"
-              component={OrdersScreen}
-            />
-
+            <Stack.Screen name="Onboarding" component={OnboardingScreen} />
+            <Stack.Screen name="Splash" component={SplashScreen} />
+            
+            {/* Prevents crashes if any screen replaces to LoginRoleSelection */}
+            <Stack.Screen name="LoginRoleSelection" component={Login} />
+            
+            <Stack.Screen name="Login" component={Login} />
+            <Stack.Screen name="StaffLogin" component={StaffLoginScreen} />
+            <Stack.Screen name="Register" component={Register} />
+            <Stack.Screen name="Trial" component={TrialScreen} />
+            <Stack.Screen name="Dashboard" component={Dashboard} />
+            <Stack.Screen name="JournalEntry" component={JournalEntry} />
+            <Stack.Screen name="Scan" component={ScanScreen} />
+            <Stack.Screen name="Sales" component={SalesScreen} />
+            <Stack.Screen name="SalesHistory" component={SalesHistory} />
+            <Stack.Screen name="PurchaseHistory" component={PurchaseHistory} />
+            <Stack.Screen name="Inventory" component={InventoryScreen} />
+            <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+            <Stack.Screen name="DemoLogin" component={DemoLogin} />
+            <Stack.Screen name="StaffCreation" component={StaffCreationScreen} />
+            <Stack.Screen name="Profile" component={ProfileScreen} />
+            <Stack.Screen name="Settings" component={SettingsScreen} />
+            <Stack.Screen name="Orders" component={OrdersScreen} />
           </Stack.Navigator>
-
         </NavigationContainer>
-
       </ThemeProvider>
-
     </SafeAreaProvider>
   );
 }
 
+const styles = StyleSheet.create({
+  offlineBanner: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 99999999,
+    elevation: 9999,
+    backgroundColor: "#dc2626",
+    paddingTop:
+      Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 8 : 50,
+    paddingBottom: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  offlineContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offlineIcon: {
+    marginRight: 6,
+  },
+  offlineText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+});
 
 export default App;

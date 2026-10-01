@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import Clipboard from "@react-native-clipboard/clipboard";
 import {
   View,
   Text,
@@ -8,7 +9,11 @@ import {
   Image,
   SafeAreaView,
   Alert,
-  LogBox
+  LogBox,
+  Platform,
+  StatusBar,
+  ToastAndroid,
+  ActivityIndicator
 } from "react-native";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { launchImageLibrary } from "react-native-image-picker";
@@ -50,93 +55,202 @@ export default function ProfileScreen({ navigation }) {
   }, []);
 
   const loadUser = async () => {
-    const session = await getSession();
-    if (!session?.uid) return;
-    const uid = session.uid;
+    try {
+      const session = await getSession();
+      const uid = session?.uid || auth.currentUser?.uid;
+      if (!uid) return;
 
-    const savedMode = await AsyncStorage.getItem("app_mode");
-    const activeMode = savedMode === "global" ? "global" : "local";
-    setCurrentMode(activeMode);
+      const savedMode = await AsyncStorage.getItem("app_mode");
+      const activeMode = savedMode === "global" ? "global" : "local";
+      setCurrentMode(activeMode);
 
-    const snap = await getDoc(doc(db, "users", uid));
-    if (snap.exists()) {
-      const data = snap.data();
-      setOwnerName(data[`${activeMode}_ownerName`] || data.ownerName || "");
-      setEmail(data[`${activeMode}_email`] || data.email || "");
-      setPhone(data[`${activeMode}_phone`] || data.phone || "");
+      const snap = await getDoc(doc(db, "users", uid));
+      if (snap.exists()) {
+        const data = snap.data();
+        setOwnerName(data[`${activeMode}_ownerName`] || data.ownerName || "");
+        setEmail(data[`${activeMode}_email`] || data.email || "");
+        setPhone(data[`${activeMode}_phone`] || data.phone || "");
 
-      setShopName(data[`${activeMode}_shopName`] || data.shopName || "");
-      setGstNumber(data[`${activeMode}_gstNumber`] || data.gstNumber || "");
-      
-      const expiry = data.subscriptionExpiry || 0;
-      const activeFlag = data.subscriptionActive !== false && Date.now() < expiry;
-      setIsUidActive(activeFlag);
-      setCustomShopUid(data.customShopUid || "Not Generated / Expired");
+        setShopName(data[`${activeMode}_shopName`] || data.shopName || "");
+        setGstNumber(data[`${activeMode}_gstNumber`] || data.gstNumber || "");
+        
+        const expiry = data.subscriptionExpiry || 0;
+        const activeFlag = data.subscriptionActive !== false && Date.now() < expiry;
+        setIsUidActive(activeFlag);
+        setCustomShopUid(data.customShopUid || "Not Generated / Expired");
 
-      let fetchedAddress = data[`${activeMode}_address`] || data.address || "";
-      if (typeof fetchedAddress === "object" && fetchedAddress !== null) {
-        fetchedAddress = fetchedAddress.fullAddress || JSON.stringify(fetchedAddress); 
+       if (activeFlag) {
+          setCustomShopUid(uid);
+        } else {
+          setCustomShopUid("Disabled / Expired");
+        }
+
+        let fetchedAddress = data[`${activeMode}_address`] || data.address || "";
+        if (typeof fetchedAddress === "object" && fetchedAddress !== null) {
+          fetchedAddress = fetchedAddress.fullAddress || JSON.stringify(fetchedAddress); 
+        }
+        setAddress(fetchedAddress);
+
+        // Cloud Firestore-ல் இருந்து இமேஜ்களை முதலில் எடுக்கும்
+        const cloudImage = data[`${activeMode}_profileImage`] || data.profileImage || null;
+        const cloudLogo = data[`${activeMode}_shopLogo`] || data.shopLogo || null;
+
+        if (cloudImage) {
+          setImage(cloudImage);
+          await AsyncStorage.setItem(`${activeMode}_profileImage_${uid}`, cloudImage);
+        } else {
+          const savedImage = await AsyncStorage.getItem(`${activeMode}_profileImage_${uid}`);
+          if (savedImage) setImage(savedImage);
+        }
+
+        if (cloudLogo) {
+          setShopLogo(cloudLogo);
+          await AsyncStorage.setItem(`${activeMode}_shopLogo_${uid}`, cloudLogo);
+        } else {
+          const savedLogo = await AsyncStorage.getItem(`${activeMode}_shopLogo_${uid}`);
+          if (savedLogo) setShopLogo(savedLogo);
+        }
       }
-      setAddress(fetchedAddress);
+    } catch (err) {
+      console.log("Load user error:", err);
     }
+  };
 
-    const savedImage = await AsyncStorage.getItem(`${activeMode}_profileImage_${uid}`);
-    const savedLogo = await AsyncStorage.getItem(`${activeMode}_shopLogo_${uid}`);
-
-    if (savedImage) setImage(savedImage);
-    if (savedLogo) setShopLogo(savedLogo);
+  // Base64 helper: ஒருவேளை picker-ல் base64 கிடைக்கவில்லை என்றால் RNFS மூலம் மாற்றித் தரும்
+  const getBase64FromAsset = async (asset) => {
+    if (asset.base64) {
+      return `data:${asset.type || "image/jpeg"};base64,${asset.base64}`;
+    }
+    if (asset.uri) {
+      try {
+        const base64Data = await RNFS.readFile(asset.uri, "base64");
+        return `data:${asset.type || "image/jpeg"};base64,${base64Data}`;
+      } catch (err) {
+        console.error("RNFS Base64 convert error:", err);
+        return asset.uri;
+      }
+    }
+    return null;
   };
 
   const pickProfileImage = () => {
-    launchImageLibrary({ mediaType: "photo" }, async (res) => {
-      if (res.assets) {
-        const uri = res.assets[0].uri;
-        setImage(uri);
-        await AsyncStorage.setItem(`${currentMode}_profileImage_${auth.currentUser.uid}`, uri);
+    launchImageLibrary(
+      {
+        mediaType: "photo",
+        maxWidth: 400,
+        maxHeight: 400,
+        quality: 0.6,
+        includeBase64: true,
+      },
+      async (res) => {
+        if (res.didCancel || res.errorCode) return;
+        if (res.assets && res.assets.length > 0) {
+          const base64Uri = await getBase64FromAsset(res.assets[0]);
+          if (base64Uri) {
+            setImage(base64Uri);
+            const session = await getSession();
+            const uid = session?.uid || auth.currentUser?.uid;
+            if (uid) {
+              await AsyncStorage.setItem(`${currentMode}_profileImage_${uid}`, base64Uri);
+            }
+          }
+        }
       }
-    });
+    );
   };
 
   const pickShopLogo = () => {
-    launchImageLibrary({ mediaType: "photo" }, async (res) => {
-      if (res.assets) {
-        const uri = res.assets[0].uri;
-        setShopLogo(uri);
-        await AsyncStorage.setItem(`${currentMode}_shopLogo_${auth.currentUser.uid}`, uri);
+    launchImageLibrary(
+      {
+        mediaType: "photo",
+        maxWidth: 400,
+        maxHeight: 400,
+        quality: 0.6,
+        includeBase64: true,
+      },
+      async (res) => {
+        if (res.didCancel || res.errorCode) return;
+        if (res.assets && res.assets.length > 0) {
+          const base64Uri = await getBase64FromAsset(res.assets[0]);
+          if (base64Uri) {
+            setShopLogo(base64Uri);
+            const session = await getSession();
+            const uid = session?.uid || auth.currentUser?.uid;
+            if (uid) {
+              await AsyncStorage.setItem(`${currentMode}_shopLogo_${uid}`, base64Uri);
+            }
+          }
+        }
       }
-    });
+    );
   };
 
   const saveProfile = async () => {
     try {
       setLoading(true);
+      const session = await getSession();
+      const uid = session?.uid || auth.currentUser?.uid;
+
+      if (!uid) {
+        Alert.alert("Error", "User session not found. Please re-login.");
+        setLoading(false);
+        return;
+      }
+
+      // Firestore document size limit 1MB என்பதால் base64 சரியான அளவில் சேமிக்கப்படுகிறது
       const updateData = {
-        [`${currentMode}_ownerName`]: ownerName,
-        [`${currentMode}_email`]: email,
-        [`${currentMode}_phone`]: phone,
-        [`${currentMode}_shopName`]: shopName,
-        [`${currentMode}_gstNumber`]: gstNumber,
-        [`${currentMode}_address`]: address,
+        // Mode-specific fields
+        [`${currentMode}_ownerName`]: ownerName || "",
+        [`${currentMode}_email`]: email || "",
+        [`${currentMode}_phone`]: phone || "",
+        [`${currentMode}_shopName`]: shopName || "",
+        [`${currentMode}_gstNumber`]: gstNumber || "",
+        [`${currentMode}_address`]: address || "",
+        [`${currentMode}_profileImage`]: image || null,
+        [`${currentMode}_shopLogo`]: shopLogo || null,
+
+        // Common Fallback fields (மற்ற screens & devices-க்கு)
+        ownerName: ownerName || "",
+        email: email || "",
+        phone: phone || "",
+        shopName: shopName || "",
+        gstNumber: gstNumber || "",
+        address: address || "",
+        profileImage: image || null,
+        shopLogo: shopLogo || null,
       };
 
-      await updateDoc(doc(db, "users", auth.currentUser.uid), updateData);
+      await updateDoc(doc(db, "users", uid), updateData);
+
+      // Save to local cache
+      if (image) await AsyncStorage.setItem(`${currentMode}_profileImage_${uid}`, image);
+      if (shopLogo) await AsyncStorage.setItem(`${currentMode}_shopLogo_${uid}`, shopLogo);
+
       Alert.alert("Success", `${currentMode.toUpperCase()} Details Updated Successfully`);
     } catch (e) {
-      Alert.alert("Error", "Update Failed");
+      console.error("Save profile error:", e);
+      Alert.alert("Error", "Update Failed: " + (e.message || "Unknown error"));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
+      <StatusBar
+        backgroundColor={theme.background}
+        barStyle={theme.dark ? "light-content" : "dark-content"}
+      />
       <KeyboardAwareScrollView
+        style={styles.container}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         enableOnAndroid={true}
-        extraScrollHeight={20}
+        extraScrollHeight={25}
       >
+        {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
+          <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Icon name="arrow-left" size={28} color={theme.text} />
           </TouchableOpacity>
           <Text style={[styles.title, { color: theme.text }]}>
@@ -145,20 +259,80 @@ export default function ProfileScreen({ navigation }) {
           <View style={{ width: 28 }} />
         </View>
 
-        <View style={[styles.uidBanner, { backgroundColor: isUidActive ? "#ecfdf5" : "#fef2f2", borderColor: isUidActive ? "#10b981" : "#ef4444" }]}>
-          <Icon name={isUidActive ? "shield-check" : "shield-alert"} size={22} color={isUidActive ? "#16a34a" : "#ef4444"} />
-          <View style={{ marginLeft: 10, flex: 1 }}>
-            <Text style={{ fontWeight: "700", color: isUidActive ? "#16a34a" : "#ef4444" }}>
-              Shop UID: {customShopUid} ({isUidActive ? "Active" : "Disabled / Expired"})
-            </Text>
-            {!isUidActive && (
-              <TouchableOpacity onPress={() => navigation.navigate("Subscription")}>
-                <Text style={{ color: "#2563eb", fontWeight: "bold", fontSize: 13, marginTop: 2 }}>Renew Subscription to Unlock UID →</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
+      {/* UID Status Banner */}
+<View
+  style={[
+    styles.uidBanner,
+    {
+      backgroundColor: isUidActive ? "#ecfdf5" : "#fef2f2",
+      borderColor: isUidActive ? "#10b981" : "#ef4444",
+    },
+  ]}
+>
+  <Icon
+    name={isUidActive ? "shield-check" : "shield-alert"}
+    size={24}
+    color={isUidActive ? "#16a34a" : "#ef4444"}
+  />
 
+  <View style={{ marginLeft: 10, flex: 1 }}>
+    <Text
+      numberOfLines={1}
+      ellipsizeMode="middle"
+      style={{
+        fontWeight: "700",
+        color: isUidActive ? "#16a34a" : "#ef4444",
+        fontSize: 13,
+      }}
+    >
+      Shop UID: {isUidActive ? customShopUid : "Subscription Inactive"}
+    </Text>
+    <Text
+      style={{
+        fontSize: 12,
+        color: isUidActive ? "#15803d" : "#b91c1c",
+        marginTop: 2,
+      }}
+    >
+      Status: {isUidActive ? "Active" : "Disabled / Expired"}
+    </Text>
+
+    {!isUidActive && (
+      <TouchableOpacity onPress={() => navigation.navigate("Subscription")}>
+        <Text
+          style={{
+            color: "#2563eb",
+            fontWeight: "bold",
+            fontSize: 13,
+            marginTop: 4,
+          }}
+        >
+          Renew Subscription to Unlock UID →
+        </Text>
+      </TouchableOpacity>
+    )}
+  </View>
+
+  {/* Active ஆக இருக்கும் போது மட்டும் Copy Button காட்டும் */}
+  {isUidActive && (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={() => {
+        Clipboard.setString(customShopUid);
+        if (Platform.OS === "android") {
+          ToastAndroid.show("Shop UID copied!", ToastAndroid.SHORT);
+        } else {
+          Alert.alert("Copied", "Shop UID copied to clipboard!");
+        }
+      }}
+      style={styles.copyBtn}
+    >
+      <Icon name="content-copy" size={18} color="#16a34a" />
+    </TouchableOpacity>
+  )}
+</View>
+
+        {/* Tab Toggle */}
         <View style={[styles.tabContainer, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <TouchableOpacity
             style={[styles.tabButton, activeTab === "profile" && styles.activeTab]}
@@ -181,10 +355,11 @@ export default function ProfileScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
+        {/* Profile Tab */}
         {activeTab === "profile" && (
           <View style={styles.sectionContainer}>
             <View style={styles.imageWrap}>
-              <TouchableOpacity onPress={pickProfileImage}>
+              <TouchableOpacity onPress={pickProfileImage} activeOpacity={0.8}>
                 {image ? (
                   <Image source={{ uri: image }} style={styles.image} />
                 ) : (
@@ -228,10 +403,11 @@ export default function ProfileScreen({ navigation }) {
           </View>
         )}
 
+        {/* Shop Tab */}
         {activeTab === "shop" && (
           <View style={styles.sectionContainer}>
             <View style={styles.imageWrap}>
-              <TouchableOpacity onPress={pickShopLogo} style={{ alignItems: "center" }}>
+              <TouchableOpacity onPress={pickShopLogo} activeOpacity={0.8} style={{ alignItems: "center" }}>
                 {shopLogo ? (
                   <Image source={{ uri: shopLogo }} style={{ width: 100, height: 100, borderRadius: 20 }} />
                 ) : (
@@ -318,8 +494,13 @@ export default function ProfileScreen({ navigation }) {
           </View>
         )}
 
-        <TouchableOpacity style={styles.saveBtn} onPress={saveProfile}>
-          <Text style={styles.saveText}>{loading ? "Saving..." : "Save Changes"}</Text>
+        {/* Action Buttons */}
+        <TouchableOpacity style={styles.saveBtn} onPress={saveProfile} disabled={loading}>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.saveText}>Save Changes</Text>
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -341,23 +522,103 @@ export default function ProfileScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 10, marginBottom: 15 },
+  safeArea: {
+    flex: 1,
+    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
+  },
+  container: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 10,
+    marginBottom: 15,
+  },
   title: { fontSize: 20, fontWeight: "bold" },
-  uidBanner: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, marginBottom: 20 },
-  tabContainer: { flexDirection: "row", borderRadius: 16, borderWidth: 1, padding: 4, marginBottom: 25 },
-  tabButton: { flex: 1, flexDirection: "row", paddingVertical: 12, justifyContent: "center", alignItems: "center", borderRadius: 12, gap: 8 },
+  uidBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 20,
+  },
+  tabContainer: {
+    flexDirection: "row",
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 4,
+    marginBottom: 25,
+  },
+  tabButton: {
+    flex: 1,
+    flexDirection: "row",
+    paddingVertical: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 12,
+    gap: 8,
+  },
   activeTab: { backgroundColor: "#6366f1" },
   tabText: { fontWeight: "bold", fontSize: 14 },
   sectionContainer: { marginBottom: 10 },
   imageWrap: { alignSelf: "center", marginBottom: 25, alignItems: "center" },
   image: { width: 120, height: 120, borderRadius: 60 },
-  placeholder: { width: 120, height: 120, borderRadius: 60, backgroundColor: "#6366f1", justifyContent: "center", alignItems: "center" },
-  editBtn: { position: "absolute", bottom: 15, right: 0, width: 34, height: 34, borderRadius: 17, backgroundColor: "#16a34a", justifyContent: "center", alignItems: "center" },
-  input: { marginBottom: 18, borderRadius: 18, padding: 16, fontSize: 15, borderWidth: 1 },
-  saveBtn: { backgroundColor: "#6366f1", padding: 18, borderRadius: 18, alignItems: "center", marginTop: 10 },
+  placeholder: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: "#6366f1",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  editBtn: {
+    position: "absolute",
+    bottom: 5,
+    right: 0,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#16a34a",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  input: {
+    marginBottom: 18,
+    borderRadius: 18,
+    padding: 16,
+    fontSize: 15,
+    borderWidth: 1,
+  },
+  saveBtn: {
+    backgroundColor: "#6366f1",
+    padding: 18,
+    borderRadius: 18,
+    alignItems: "center",
+    marginTop: 10,
+  },
   saveText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  logoutBtn: { backgroundColor: "#ef4444", padding: 18, borderRadius: 18, alignItems: "center", marginTop: 15, marginBottom: 40 },
+  logoutBtn: {
+    backgroundColor: "#ef4444",
+    padding: 18,
+    borderRadius: 18,
+    alignItems: "center",
+    marginTop: 15,
+    marginBottom: 40,
+  },
+  copyBtn: {
+  padding: 8,
+  backgroundColor: "#d1fae5",
+  borderRadius: 8,
+  marginLeft: 8,
+  justifyContent: "center",
+  alignItems: "center",
+},
   logoutText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  labelText: { textAlign: "center", marginTop: 8, fontWeight: "600" }
+  labelText: { textAlign: "center", marginTop: 8, fontWeight: "600" },
 });

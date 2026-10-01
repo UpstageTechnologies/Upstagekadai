@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Switch, Image, ScrollView, Alert, Modal, Linking, StatusBar } from "react-native";
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Switch, Image, ScrollView, Alert, Modal, Linking, StatusBar, FlatList, ActivityIndicator, Platform, PermissionsAndroid, InteractionManager } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
@@ -9,6 +9,7 @@ import { auth, db } from "../utils/firebaseConfig";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { useTheme } from "../theme/ThemeContext";
 import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
+import RNBluetoothEscposPrinter from "react-native-thermal-receipt-printer";
 
 export default function SettingsScreen({ navigation }) {
   const { darkMode, toggleTheme, theme } = useTheme();
@@ -71,6 +72,13 @@ export default function SettingsScreen({ navigation }) {
   const [printingMode, setPrintingMode] = useState("Automatic");
   const [showPrinterDiscovery, setShowPrinterDiscovery] = useState(false);
 
+  // Bluetooth Printer Discovery States
+  const [availablePrinters, setAvailablePrinters] = useState([]);
+  const [connectedPrinter, setConnectedPrinter] = useState(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [connectingAddress, setConnectingAddress] = useState(null);
+  const [printerSearchText, setPrinterSearchText] = useState("");
+
   // Modals States
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
@@ -81,11 +89,131 @@ export default function SettingsScreen({ navigation }) {
   const [cashEnabled, setCashEnabled] = useState(true);
   const [cashDisplayName, setCashDisplayName] = useState("");
   const [defaultPayment, setDefaultPayment] = useState("cash");
-  
 
   useEffect(() => {
     loadSettingsData();
+    const task = InteractionManager.runAfterInteractions(() => {
+      initBluetoothPrinter();
+    });
+    return () => task.cancel();
   }, []);
+
+  const requestBluetoothPermissions = async () => {
+    if (Platform.OS === "android") {
+      try {
+        if (Platform.Version >= 31) {
+          const res = await PermissionsAndroid.requestMultiple([
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          ]);
+
+          const scanGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED;
+          const connectGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
+
+          if (scanGranted && connectGranted) {
+            return true;
+          }
+
+          // Check if user clicked "Never ask again" / permanently denied
+          const scanDenied = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
+          const connectDenied = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
+
+          if (scanDenied || connectDenied) {
+            Alert.alert(
+              "Permission Required",
+              "Nearby devices / Bluetooth permission deny aagirukku. Settings-la poi 'Nearby Devices' allow pannunga.",
+              [
+                { text: "Cancel", style: "cancel" },
+                { text: "Open Settings", onPress: () => Linking.openSettings() }
+              ]
+            );
+          }
+          return false;
+        } else {
+          const granted = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            {
+              title: "Location Permission",
+              message: "Bluetooth devices scan panna Location permission thevaipadu.",
+              buttonNeutral: "Ask Later",
+              buttonNegative: "Cancel",
+              buttonPositive: "OK",
+            }
+          );
+          return granted === PermissionsAndroid.RESULTS.GRANTED;
+        }
+      } catch (err) {
+        console.log("Permission error:", err);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const initBluetoothPrinter = async () => {
+    try {
+      await RNBluetoothEscposPrinter.init();
+      const savedPrinter = await AsyncStorage.getItem("connected_printer_device");
+      if (savedPrinter) {
+        const printerObj = JSON.parse(savedPrinter);
+        setConnectedPrinter(printerObj);
+        if (printerAutoReconnect) {
+          RNBluetoothEscposPrinter.connectPrinter(printerObj.inner_mac_address)
+            .then(() => console.log("Printer auto-reconnected successfully"))
+            .catch((e) => console.log("Auto-reconnect error:", e));
+        }
+      }
+    } catch (e) {
+      console.log("BLE Init error:", e);
+    }
+  };
+
+  const scanPrinters = async () => {
+    const permissionGranted = await requestBluetoothPermissions();
+    if (!permissionGranted) {
+      return;
+    }
+    setIsScanning(true);
+    setAvailablePrinters([]);
+    try {
+      await RNBluetoothEscposPrinter.init();
+      const devices = await RNBluetoothEscposPrinter.getDeviceList();
+      if (Array.isArray(devices)) {
+        setAvailablePrinters(devices);
+      }
+    } catch (error) {
+      Alert.alert("Scan Error", error.message || "Nearby bluetooth devices scan panna mudiyala.");
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const connectToPrinter = async (printer) => {
+    try {
+      setConnectingAddress(printer.inner_mac_address);
+      await RNBluetoothEscposPrinter.connectPrinter(printer.inner_mac_address);
+      setConnectedPrinter(printer);
+      await AsyncStorage.setItem("connected_printer_device", JSON.stringify(printer));
+      setShowPrinterDiscovery(false);
+      Alert.alert("Connected ✅", `${printer.device_name || "Printer"} connect aaiduchu!`);
+    } catch (err) {
+      Alert.alert("Error ❌", "Printer connect aagala: " + err.message);
+    } finally {
+      setConnectingAddress(null);
+    }
+  };
+
+  const disconnectPrinter = async () => {
+    try {
+      await RNBluetoothEscposPrinter.closeConn();
+      await AsyncStorage.removeItem("connected_printer_device");
+      setConnectedPrinter(null);
+      Alert.alert("Disconnected", "Printer disconnect aaiduchu.");
+    } catch (e) {
+      console.log("Disconnect error:", e);
+    }
+  };
 
   const loadSettingsData = async () => {
     setLoading(true);
@@ -130,12 +258,12 @@ export default function SettingsScreen({ navigation }) {
           setGstPercentage(data.gstPercentage || "18");
 
           if (data.receiptConfig) {
-          setReceiptStoreLogo(data.receiptConfig.storeLogo ?? false);
-          setReceiptHeader(data.receiptConfig.header || "");
-          setReceiptFooter(data.receiptConfig.footer || "Thank you!");
-        }
-        const savedReceiptLogo = await AsyncStorage.getItem(`receipt_logo_${user.uid}`);
-        if (savedReceiptLogo) setReceiptLogoUri(savedReceiptLogo);
+            setReceiptStoreLogo(data.receiptConfig.storeLogo ?? false);
+            setReceiptHeader(data.receiptConfig.header || "");
+            setReceiptFooter(data.receiptConfig.footer || "Thank you!");
+          }
+          const savedReceiptLogo = await AsyncStorage.getItem(`receipt_logo_${user.uid}`);
+          if (savedReceiptLogo) setReceiptLogoUri(savedReceiptLogo);
 
           if (data.printerConfig) {
             setPrinterPaperSize(data.printerConfig.paperSize || "58mm");
@@ -214,8 +342,6 @@ export default function SettingsScreen({ navigation }) {
           copies: multipleReceiptCopies,
           compatibility: printerCompatibility,
           printingMode: printingMode,
-
-          
         }
       });
 
@@ -237,7 +363,6 @@ export default function SettingsScreen({ navigation }) {
       setLoading(false);
     }
   };
-  
 
   const handleChooseFromGallery = () => {
     setShowPickerModal(false);
@@ -251,6 +376,10 @@ export default function SettingsScreen({ navigation }) {
   const handleCall = () => Linking.openURL(`tel:9442461428`);
   const handleEmail = () => Linking.openURL(`mailto:upstagetechnologies@gmail.com`);
   const handleWhatsApp = () => Linking.openURL(`whatsapp://send?phone=919442461428`);
+
+  const filteredPrinterList = availablePrinters.filter(item => 
+    (item.device_name || "").toLowerCase().includes(printerSearchText.toLowerCase())
+  );
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background, paddingTop: insets.top }]}>
@@ -327,7 +456,9 @@ export default function SettingsScreen({ navigation }) {
               </View>
               <View style={styles.menuTextContainer}>
                 <Text style={[styles.menuTitle, { color: theme.text }]}>Printer Settings</Text>
-                <Text style={styles.menuSubtitle}>Connect receipt printer</Text>
+                <Text style={styles.menuSubtitle}>
+                  {connectedPrinter ? `Connected: ${connectedPrinter.device_name || "Thermal Printer"}` : "Connect receipt printer"}
+                </Text>
               </View>
               <Icon name="chevron-right" size={22} color="#94a3b8" />
             </TouchableOpacity>
@@ -506,11 +637,6 @@ export default function SettingsScreen({ navigation }) {
                 <Switch value={receiptShopName} onValueChange={setReceiptShopName} trackColor={{ false: "#e2e8f0", true: "#10b981" }} />
               </View>
 
-              
-              <View style={styles.subConfigHeader}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Shop Name</Text>
-                <Switch value={receiptShopName} onValueChange={setReceiptShopName} trackColor={{ false: "#e2e8f0", true: "#10b981" }} />
-              </View>
               <View style={styles.subConfigHeader}>
                 <Text style={[styles.menuTitle, { color: theme.text }]}>Shop Address</Text>
                 <Switch value={receiptShopAddress} onValueChange={setReceiptShopAddress} trackColor={{ false: "#e2e8f0", true: "#10b981" }} />
@@ -537,20 +663,31 @@ export default function SettingsScreen({ navigation }) {
           </View>
         )}
 
-        {/* 4. PRINTER SETTINGS SCREEN (UPDATED ACCORDING TO IMAGES) */}
+        {/* 4. PRINTER SETTINGS SCREEN */}
         {currentView === "printer" && (
           <View>
             {/* Connected Printer Card */}
             <View style={[styles.subPaymentCard, { backgroundColor: theme.card, alignItems: "center", paddingVertical: 22 }]}>
-              <View style={{ width: 45, height: 45, borderRadius: 12, backgroundColor: "rgba(0,0,0,0.04)", justifyContent: "center", alignItems: "center", marginBottom: 10 }}>
-                <Icon name="printer-off" size={24} color="#64748b" />
+              <View style={{ width: 45, height: 45, borderRadius: 12, backgroundColor: connectedPrinter ? "#dcfce7" : "rgba(0,0,0,0.04)", justifyContent: "center", alignItems: "center", marginBottom: 10 }}>
+                <Icon name={connectedPrinter ? "printer-check" : "printer-off"} size={24} color={connectedPrinter ? "#16a34a" : "#64748b"} />
               </View>
-              <Text style={[styles.menuTitle, { color: theme.text }]}>Connect a printer</Text>
-              <Text style={[styles.menuSubtitle, { textAlign: "center", marginBottom: 15 }]}>Print receipts directly from app.</Text>
-              <TouchableOpacity style={styles.findPrinterBtn} onPress={() => setShowPrinterDiscovery(true)}>
-                <Icon name="bluetooth" size={18} color="#fff" style={{ marginRight: 6 }} />
-                <Text style={{ color: "#fff", fontWeight: "700" }}>Find Printers</Text>
-              </TouchableOpacity>
+              <Text style={[styles.menuTitle, { color: theme.text }]}>
+                {connectedPrinter ? connectedPrinter.device_name || "Thermal Printer" : "Connect a printer"}
+              </Text>
+              <Text style={[styles.menuSubtitle, { textAlign: "center", marginBottom: 15 }]}>
+                {connectedPrinter ? `Address: ${connectedPrinter.inner_mac_address}` : "Print receipts directly from app."}
+              </Text>
+              {connectedPrinter ? (
+                <TouchableOpacity style={[styles.findPrinterBtn, { backgroundColor: "#ef4444" }]} onPress={disconnectPrinter}>
+                  <Icon name="link-variant-off" size={18} color="#fff" style={{ marginRight: 6 }} />
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>Disconnect</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.findPrinterBtn} onPress={() => { setShowPrinterDiscovery(true); scanPrinters(); }}>
+                  <Icon name="bluetooth" size={18} color="#fff" style={{ marginRight: 6 }} />
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>Find Printers</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Printer Setup Section */}
@@ -932,12 +1069,62 @@ export default function SettingsScreen({ navigation }) {
         </View>
       </Modal>
 
+      {/* PRINTER DISCOVERY MODAL */}
       <Modal visible={showPrinterDiscovery} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>Printer Discovery</Text>
-            <TextInput style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} placeholder="Search printer..." placeholderTextColor="#94a3b8" />
-            <Text style={[styles.menuSubtitle, { marginVertical: 15, textAlign: "center" }]}>Searching for nearby bluetooth printers...</Text>
+          <View style={[styles.modalContent, { backgroundColor: theme.card, maxHeight: "80%" }]}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 }}>
+              <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 0 }]}>Printer Discovery</Text>
+              <TouchableOpacity onPress={scanPrinters} disabled={isScanning}>
+                <Icon name="refresh" size={22} color={isScanning ? "#94a3b8" : "#10b981"} />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput 
+              style={[styles.input, { backgroundColor: theme.background, color: theme.text, marginBottom: 10 }]} 
+              placeholder="Search printer..." 
+              placeholderTextColor="#94a3b8" 
+              value={printerSearchText}
+              onChangeText={setPrinterSearchText}
+            />
+
+            {isScanning ? (
+              <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                <ActivityIndicator size="large" color="#10b981" />
+                <Text style={[styles.menuSubtitle, { marginTop: 10, textAlign: "center" }]}>Searching for nearby bluetooth printers...</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={filteredPrinterList}
+                keyExtractor={(item) => item.inner_mac_address}
+                ListEmptyComponent={
+                  <Text style={[styles.menuSubtitle, { marginVertical: 15, textAlign: "center" }]}>
+                    No bluetooth printers found. Turn ON bluetooth and scan again.
+                  </Text>
+                }
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={{ flexDirection: "row", alignItems: "center", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "rgba(0,0,0,0.06)" }}
+                    onPress={() => connectToPrinter(item)}
+                    disabled={connectingAddress === item.inner_mac_address}
+                  >
+                    <Icon name="printer" size={22} color="#10b981" style={{ marginRight: 12 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.menuTitle, { color: theme.text, fontSize: 15 }]}>
+                        {item.device_name || "Unknown Printer"}
+                      </Text>
+                      <Text style={styles.menuSubtitle}>{item.inner_mac_address}</Text>
+                    </View>
+                    {connectingAddress === item.inner_mac_address ? (
+                      <ActivityIndicator size="small" color="#10b981" />
+                    ) : (
+                      <Icon name="link-variant" size={20} color="#94a3b8" />
+                    )}
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+
             <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowPrinterDiscovery(false)}>
               <Text style={{ color: "#ef4444", fontWeight: "700" }}>Cancel</Text>
             </TouchableOpacity>
@@ -1035,4 +1222,3 @@ const styles = StyleSheet.create({
   findPrinterBtn: { flexDirection: "row", backgroundColor: "#10b981", paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, marginTop: 4, alignItems: "center" },
   aboutText: { fontSize: 14, lineHeight: 22, textAlign: "center" }
 });
-

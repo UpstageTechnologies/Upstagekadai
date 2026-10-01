@@ -6,7 +6,6 @@ import {
   Alert, 
   Text, 
   StyleSheet, 
-  Dimensions, 
   TextInput, 
   ScrollView, 
   TouchableOpacity, 
@@ -14,7 +13,10 @@ import {
   StatusBar, 
   Platform,
   ActivityIndicator,
-  FlatList
+  FlatList,
+  Keyboard,
+  Animated,
+  useWindowDimensions
 } from "react-native";
 import { query, where, getDocs, updateDoc, doc, getDoc, collection, addDoc, deleteDoc, serverTimestamp, onSnapshot } from "firebase/firestore";
 import RNPrint from "react-native-print";
@@ -30,16 +32,76 @@ import {
 } from "react-native-vision-camera";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
-import { auth, db } from "../utils/firebaseConfig";
+import { auth, db, storage } from "../utils/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { launchImageLibrary } from 'react-native-image-picker';
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
-import { storage } from "../utils/firebaseConfig";
 import { useTheme } from "../theme/ThemeContext";
 
-const { width } = Dimensions.get("window");
+// PROGRESS STEPPER ITEM COMPONENT
+const StepItem = ({ label, stepNumber, isCompleted, isLast }) => {
+  const scaleAnim = useRef(new Animated.Value(isCompleted ? 1 : 0.9)).current;
+  const lineAnim = useRef(new Animated.Value(isCompleted ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.spring(scaleAnim, {
+      toValue: isCompleted ? 1 : 0.9,
+      friction: 5,
+      tension: 100,
+      useNativeDriver: true,
+    }).start();
+
+    Animated.timing(lineAnim, {
+      toValue: isCompleted ? 1 : 0,
+      duration: 350,
+      useNativeDriver: false,
+    }).start();
+  }, [isCompleted]);
+
+  return (
+    <View style={stepperStyles.stepWrapper}>
+      <View style={stepperStyles.nodeRow}>
+        <Animated.View
+          style={[
+            stepperStyles.circleNode,
+            isCompleted ? stepperStyles.circleActive : stepperStyles.circleInactive,
+            { transform: [{ scale: scaleAnim }] }
+          ]}
+        >
+          {isCompleted ? (
+            <Icon name="check" size={16} color="#fff" />
+          ) : (
+            <Text style={stepperStyles.stepNumText}>{stepNumber}</Text>
+          )}
+        </Animated.View>
+
+        {!isLast && (
+          <View style={stepperStyles.lineTrack}>
+            <Animated.View
+              style={[
+                stepperStyles.lineFill,
+                {
+                  width: lineAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["0%", "100%"],
+                  }),
+                },
+              ]}
+            />
+          </View>
+        )}
+      </View>
+      <Text numberOfLines={1} style={[stepperStyles.stepLabel, isCompleted && stepperStyles.stepLabelActive]}>
+        {label}
+      </Text>
+    </View>
+  );
+};
 
 export default function ScanScreen({ navigation }) {
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
+
   const { darkMode, theme } = useTheme();
   const { ScanBeep } = NativeModules;
   const [cameraPosition, setCameraPosition] = useState("back");
@@ -61,7 +123,6 @@ export default function ScanScreen({ navigation }) {
   const [salesPrice, setSalesPrice] = useState("");
   const [bill, setBill] = useState([]);
   const [searchText, setSearchText] = useState("");
-  const [manualMode, setManualMode] = useState(false);
   const [successVisible, setSuccessVisible] = useState(false);
   const [addingAll, setAddingAll] = useState(false);
   const [shopName, setShopName] = useState("MY SHOP");
@@ -76,14 +137,13 @@ export default function ScanScreen({ navigation }) {
   const [currentPurNo, setCurrentPurNo] = useState("");
   const [currentPurDate, setCurrentPurDate] = useState("");
   const [purTotal, setPurTotal] = useState(0);
-  const [showMore, setShowMore] = useState(false);
   const scanLockRef = useRef(false);
-  const [gstEnabled, setGstEnabled] = useState(false);
   const [taxPercent, setTaxPercent] = useState("0");
   const [taxOpen, setTaxOpen] = useState(false);
   const [formStep, setFormStep] = useState(1);
   const { hasPermission, requestPermission } = useCameraPermission();
-  // PREDICT BOTTOM SHEET & WHATSAPP SEARCH WEB STATES
+
+  // PREDICT BOTTOM SHEET STATES
   const [predictModalVisible, setPredictModalVisible] = useState(false);
   const [predictLoading, setPredictLoading] = useState(false);
   const [predictBarcode, setPredictBarcode] = useState("");
@@ -96,8 +156,9 @@ export default function ScanScreen({ navigation }) {
   const [predictSalesPrice, setPredictSalesPrice] = useState("");
   const [predictQty, setPredictQty] = useState(1);
   const [predictUnitType, setPredictUnitType] = useState("Qty");
+  const [missingFields, setMissingFields] = useState([]);
 
-  // WhatsApp-Style Full Screen Modal
+  // WhatsApp-Style Web Search
   const [webImageGridModal, setWebImageGridModal] = useState(false);
   const [webSearchQuery, setWebSearchQuery] = useState("");
   const [webSearchResults, setWebSearchResults] = useState([]);
@@ -106,6 +167,25 @@ export default function ScanScreen({ navigation }) {
   // Headless Google Scraper State
   const [scraperUrl, setScraperUrl] = useState("");
   const headlessWebRef = useRef(null);
+
+  // HARDWARE GUN SCANNER ENGINE
+  const hiddenScannerRef = useRef(null);
+  const [scannerBuffer, setScannerBuffer] = useState("");
+  const scanDebounceTimerRef = useRef(null);
+
+  const focusGunScanner = () => {
+    hiddenScannerRef.current?.focus();
+    Keyboard.dismiss();
+  };
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const timer = setTimeout(() => {
+        focusGunScanner();
+      }, 400);
+      return () => clearTimeout(timer);
+    }, [])
+  );
 
   const taxItems = [
     { label: "No Tax (0%)", value: "0" },
@@ -219,11 +299,13 @@ export default function ScanScreen({ navigation }) {
       return localUri;
     }
   };
+
   useEffect(() => {
-  if (!hasPermission) {
-    requestPermission();
-  }
-}, [hasPermission, requestPermission]);
+    if (!hasPermission) {
+      requestPermission();
+    }
+  }, [hasPermission, requestPermission]);
+
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
@@ -240,13 +322,13 @@ export default function ScanScreen({ navigation }) {
 
   useEffect(() => {
     const loadShop = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
-      const snap = await getDoc(doc(db, "users", user.uid));
+      const u = auth.currentUser;
+      if (!u) return;
+      const snap = await getDoc(doc(db, "users", u.uid));
       if (snap.exists()) {
         setShopName(snap.data().shopName || "MY SHOP");
       }
-      const logo = await AsyncStorage.getItem(`shopLogo_${user.uid}`) || await AsyncStorage.getItem(`shopLogoBase64_${user.uid}`);
+      const logo = await AsyncStorage.getItem(`shopLogo_${u.uid}`) || await AsyncStorage.getItem(`shopLogoBase64_${u.uid}`);
       if (logo) { setLogoUrl(logo); }
     };
     loadShop();
@@ -254,26 +336,26 @@ export default function ScanScreen({ navigation }) {
 
   useFocusEffect(
     React.useCallback(() => {
-      const user = auth.currentUser;
-      if (!user) return;
+      const u = auth.currentUser;
+      if (!u) return;
 
       let unsubscribeInventory;
       let unsubscribeCategories;
       const setupListeners = async () => {
         const savedMode = (await AsyncStorage.getItem("app_mode")) || "local";
         setCurrentMode(savedMode);
-        const inventoryCollection = savedMode === "global" ? "global_inventory" : "inventory";
-        const categoriesCollection = savedMode === "global" ? "global_categories" : "categories";
+        const invCollection = savedMode === "global" ? "global_inventory" : "inventory";
+        const catCollection = savedMode === "global" ? "global_categories" : "categories";
 
         unsubscribeInventory = onSnapshot(
-          collection(db, "users", user.uid, inventoryCollection),
+          collection(db, "users", u.uid, invCollection),
           (snap) => {
             setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
           }
         );
 
         unsubscribeCategories = onSnapshot(
-          collection(db, "users", user.uid, categoriesCollection),
+          collection(db, "users", u.uid, catCollection),
           (snap) => {
             const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
             setCategories(data);
@@ -335,7 +417,6 @@ export default function ScanScreen({ navigation }) {
     body { font-family: monospace; margin: 0; padding: 6mm 4mm; font-size: 12px; color: #000; font-weight: bold; background-color: #fff; }
     .center { text-align: center; }
     .header-row { display: flex; align-items: center; margin-bottom: 8px; justify-content: center; }
-    .logo-img { width: 50px; height: 50px; border-radius: 50%; object-fit: cover; margin-right: 8px; border: 1px solid #ddd; }
     .divider { border-top: 1px dashed #000; margin: 6px 0; }
     .row { display: flex; justify-content: space-between; }
     table { width: 100%; border-collapse: collapse; }
@@ -401,6 +482,7 @@ export default function ScanScreen({ navigation }) {
           items: bill.map(i => ({
             itemName: i.name,
             purchasePrice: Number(i.purchasePrice || 0),
+            salesPrice: Number(i.salesPrice || 0),
             qty: Number(i.qty || 1),
             unitType: i.unitType || "Qty"
           })),
@@ -417,418 +499,229 @@ export default function ScanScreen({ navigation }) {
     }
   };
 
+  // UNIFIED DUAL SCAN PROCESSOR
+  const processIncomingBarcode = async (rawCode) => {
+    const code = String(rawCode || "").trim();
+    if (!code || code.length < 3) return;
+
+    if (scanLockRef.current) return;
+    scanLockRef.current = true;
+
+    ScanBeep?.beep?.();
+
+    setTimeout(() => {
+      scanLockRef.current = false;
+      focusGunScanner();
+    }, 1500);
+
+    setPredictBarcode(code);
+    setPredictLoading(true);
+    setPredictModalVisible(true);
+
+    try {
+      if (user && inventoryRef) {
+        const q = query(inventoryRef, where("barcode", "==", code));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty) {
+          const d = querySnapshot.docs[0].data();
+          const itemName = d.itemName || "";
+          const brand = d.brand || "";
+          const subName = d.subName || "";
+          const pPrice = String(d.purchasePrice || "");
+          const sPrice = String(d.salesPrice || "");
+          const img = d.image || "";
+
+          setPredictName(itemName);
+          setPredictBrand(brand);
+          setPredictSubName(subName);
+          setPredictPurchasePrice(pPrice);
+          setPredictSalesPrice(sPrice);
+          setPredictQty(1);
+          setPredictUnitType(d.unitType || "Qty");
+          setPredictImages(img ? [img] : []);
+          setPredictSelectedImage(img);
+
+          const missing = [];
+          if (!itemName) missing.push("Product Name");
+          if (!brand) missing.push("Brand Name");
+          if (!pPrice || Number(pPrice) <= 0) missing.push("Purchase Price");
+          if (!sPrice || Number(sPrice) <= 0) missing.push("Sales Price");
+          if (!img) missing.push("Product Image");
+          setMissingFields(missing);
+
+          setPredictLoading(false);
+          return;
+        }
+      }
+
+      let pName = "";
+      let pBrand = "";
+      let pSub = "";
+      const imageList = [];
+
+      const fetchJsonWithTimeout = async (url, timeoutMs = 4000) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch(url, {
+            method: "GET",
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return await response.json();
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      };
+
+      const setIfMissing = (currentValue, newValue) => {
+        if (currentValue && String(currentValue).trim()) return currentValue;
+        if (typeof newValue === "string" && newValue.trim()) return newValue.trim();
+        return "";
+      };
+
+      const addImages = (images) => {
+        if (!Array.isArray(images)) return;
+        images.forEach((img) => {
+          if (typeof img !== "string") return;
+          const clean = img.trim();
+          if (clean && (clean.startsWith("http://") || clean.startsWith("https://"))) {
+            imageList.push(clean.replace("http://", "https://"));
+          }
+        });
+      };
+
+      if (code.startsWith("978") || code.startsWith("979")) {
+        try {
+          const bookData = await fetchJsonWithTimeout(
+            `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(code)}`
+          );
+          if (bookData?.items?.length > 0) {
+            const info = bookData.items[0]?.volumeInfo || {};
+            pName = setIfMissing(pName, info.title);
+            pBrand = setIfMissing(pBrand, info.publisher || (Array.isArray(info.authors) ? info.authors.join(", ") : ""));
+            pSub = setIfMissing(pSub, info.subtitle || (Array.isArray(info.categories) ? info.categories[0] : ""));
+            addImages([info.imageLinks?.thumbnail, info.imageLinks?.smallThumbnail]);
+          }
+        } catch (e) {
+          console.log("Books API:", e?.message);
+        }
+      }
+
+      try {
+        const offData = await fetchJsonWithTimeout(
+          `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json`
+        );
+        if (offData?.status === 1 && offData?.product) {
+          const p = offData.product;
+          pName = setIfMissing(pName, p.product_name || p.product_name_en || p.product_name_in || p.generic_name);
+          pBrand = setIfMissing(pBrand, p.brands || p.brand_owner);
+          pSub = setIfMissing(pSub, p.generic_name || p.quantity || p.categories);
+          addImages([
+            p.image_front_url,
+            p.image_front_small_url,
+            p.image_front_thumb_url,
+            p.image_url,
+            p.image_packaging_url
+          ]);
+        }
+      } catch (e) {
+        console.log("OFF API:", e?.message);
+      }
+
+      try {
+        const productsData = await fetchJsonWithTimeout(
+          `https://world.openproductsfacts.org/api/v2/product/${encodeURIComponent(code)}.json`
+        );
+        if (productsData?.status === 1 && productsData?.product) {
+          const p = productsData.product;
+          pName = setIfMissing(pName, p.product_name || p.product_name_en || p.generic_name);
+          pBrand = setIfMissing(pBrand, p.brands || p.brand_owner);
+          pSub = setIfMissing(pSub, p.generic_name || p.quantity || p.categories);
+          addImages([p.image_front_url, p.image_url]);
+        }
+      } catch (e) {
+        console.log("OPF API:", e?.message);
+      }
+
+      try {
+        const beautyData = await fetchJsonWithTimeout(
+          `https://world.openbeautyfacts.org/api/v2/product/${encodeURIComponent(code)}.json`
+        );
+        if (beautyData?.status === 1 && beautyData?.product) {
+          const p = beautyData.product;
+          pName = setIfMissing(pName, p.product_name || p.product_name_en || p.generic_name);
+          pBrand = setIfMissing(pBrand, p.brands || p.brand_owner);
+          pSub = setIfMissing(pSub, p.generic_name || p.quantity || p.categories);
+          addImages([p.image_front_url, p.image_url]);
+        }
+      } catch (e) {
+        console.log("OBF API:", e?.message);
+      }
+
+      const uniqueImgs = [...new Set(imageList.filter(Boolean))];
+      const selectedImg = uniqueImgs[0] || "";
+
+      setPredictName(pName);
+      setPredictBrand(pBrand);
+      setPredictSubName(pSub);
+      setPredictImages(uniqueImgs);
+      setPredictSelectedImage(selectedImg);
+      setPredictPurchasePrice("");
+      setPredictSalesPrice("");
+      setPredictQty(1);
+      setPredictUnitType("Qty");
+
+      const missing = [];
+      if (!pName) missing.push("Product Name");
+      if (!pBrand) missing.push("Brand Name");
+      missing.push("Purchase Price");
+      missing.push("Sales Price");
+      if (!selectedImg) missing.push("Product Image");
+      setMissingFields(missing);
+
+      const autoSearchQuery = `${pBrand} ${pName} ${pSub}`.trim() || pName.trim();
+      if (autoSearchQuery.length > 2) {
+        executeWebSearch(autoSearchQuery);
+      }
+    } catch (err) {
+      console.log("Prediction Fetch Error:", err);
+    } finally {
+      setPredictLoading(false);
+    }
+  };
+
   const codeScanner = useCodeScanner({
     codeTypes: ["ean-13", "qr", "ean-8", "upc-a"],
     onCodeScanned: async (codes) => {
       const code = codes[0]?.value;
-    if (!code) return;
-
-if (scanLockRef.current) return;
-
-scanLockRef.current = true;
-
-ScanBeep?.beep?.();
-
-setTimeout(() => {
-  scanLockRef.current = false;
-}, 1500);
-      try {
-        const userUid = auth.currentUser?.uid;
-        if (!userUid) return;
-        const userDoc = await getDoc(doc(db, "users", userUid));
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          const plan = userData.subscriptionPlan || "Free Trial";
-          if (plan === "Basic") {
-            const todayStr = new Date().toDateString();
-            const savedDate = await AsyncStorage.getItem(`scan_date_${userUid}`);
-            let currentCount = 0;
-            if (savedDate === todayStr) {
-              const countStr = await AsyncStorage.getItem(`scan_count_${userUid}`);
-              currentCount = parseInt(countStr || "0", 10);
-            } else {
-              await AsyncStorage.setItem(`scan_date_${userUid}`, todayStr);
-              await AsyncStorage.setItem(`scan_count_${userUid}`, "0");
-            }
-            if (currentCount >= 5) {
-              Alert.alert("Scan Limit Reached", "Crossed your scan limit.");
-              return;
-            }
-            await AsyncStorage.setItem(`scan_count_${userUid}`, String(currentCount + 1));
-          }
-        }
-      } catch (err) { console.log(err); }
-
-      setPredictBarcode(code);
-      setPredictLoading(true);
-      setPredictModalVisible(true);
-
-      try {
-        if (user && inventoryRef) {
-          const q = query(inventoryRef, where("barcode", "==", code));
-          const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) {
-            const d = querySnapshot.docs[0].data();
-            setPredictName(d.itemName || "");
-            setPredictBrand(d.brand || "");
-            setPredictSubName(d.subName || "");
-            setPredictPurchasePrice(String(d.purchasePrice || ""));
-            setPredictSalesPrice(String(d.salesPrice || ""));
-            setPredictQty(1);
-            setPredictUnitType(d.unitType || "Qty");
-            const imgs = d.image ? [d.image] : [];
-            setPredictImages(imgs);
-            setPredictSelectedImage(d.image || "");
-            setPredictLoading(false);
-            return;
-          }
-        }
-        let pName = "";
-        let pBrand = "";
-        let pSub = "";
-        const imageList = [];
-
-        // ---------------------------------------------------------
-        // BARCODE LOOKUP HELPERS
-        // ---------------------------------------------------------
-
-        // Prevent one slow/dead API from blocking the barcode scan.
-        const fetchJsonWithTimeout = async (url, timeoutMs = 5000) => {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-          try {
-            const response = await fetch(url, {
-              method: "GET",
-              headers: {
-                Accept: "application/json",
-              },
-              signal: controller.signal,
-            });
-
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
-            }
-
-            return await response.json();
-          } finally {
-            clearTimeout(timeoutId);
-          }
-        };
-
-        // Only accept a real product name.
-        // Never use the barcode itself as a product name.
-        const setIfMissing = (currentValue, newValue) => {
-          if (currentValue && String(currentValue).trim()) {
-            return currentValue;
-          }
-
-          if (typeof newValue === "string" && newValue.trim()) {
-            return newValue.trim();
-          }
-
-          return "";
-        };
-
-        const addImages = (images) => {
-          if (!Array.isArray(images)) return;
-
-          images.forEach((img) => {
-            if (typeof img !== "string") return;
-
-            const clean = img.trim();
-
-            if (
-              clean &&
-              (clean.startsWith("http://") || clean.startsWith("https://"))
-            ) {
-              imageList.push(clean.replace("http://", "https://"));
-            }
-          });
-        };
-
-        // ---------------------------------------------------------
-        // 1. GOOGLE BOOKS
-        // Keep existing ISBN support.
-        // ---------------------------------------------------------
-
-        if (code.startsWith("978") || code.startsWith("979")) {
-          try {
-            const bookData = await fetchJsonWithTimeout(
-              `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(code)}`,
-              5000
-            );
-
-            if (bookData?.items?.length > 0) {
-              const info = bookData.items[0]?.volumeInfo || {};
-
-              pName = setIfMissing(pName, info.title);
-
-              pBrand = setIfMissing(
-                pBrand,
-                info.publisher ||
-                  (Array.isArray(info.authors)
-                    ? info.authors.join(", ")
-                    : "")
-              );
-
-              pSub = setIfMissing(
-                pSub,
-                info.subtitle ||
-                  (Array.isArray(info.categories)
-                    ? info.categories[0]
-                    : "")
-              );
-
-              addImages([
-                info.imageLinks?.thumbnail,
-                info.imageLinks?.smallThumbnail,
-              ]);
-            }
-          } catch (e) {
-            console.log("Google Books Error:", e?.message || e);
-          }
-        }
-
-        // ---------------------------------------------------------
-        // 2. OPEN FOOD FACTS
-        // Food / grocery / chocolates / crackers / packaged products
-        // ---------------------------------------------------------
-
-        try {
-          const offData = await fetchJsonWithTimeout(
-            `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json`,
-            5000
-          );
-
-          if (offData?.status === 1 && offData?.product) {
-            const p = offData.product;
-
-            pName = setIfMissing(
-              pName,
-              p.product_name ||
-                p.product_name_en ||
-                p.product_name_in ||
-                p.generic_name
-            );
-
-            pBrand = setIfMissing(
-              pBrand,
-              p.brands || p.brand_owner
-            );
-
-            pSub = setIfMissing(
-              pSub,
-              p.generic_name ||
-                p.quantity ||
-                p.categories
-            );
-
-            addImages([
-              p.image_front_url,
-              p.image_front_small_url,
-              p.image_front_thumb_url,
-              p.image_url,
-              p.image_small_url,
-              p.image_thumb_url,
-              p.image_packaging_url,
-              p.selected_images?.front?.display?.en,
-              p.selected_images?.front?.display?.fr,
-            ]);
-          }
-        } catch (e) {
-          console.log("Open Food Facts Error:", e?.message || e);
-        }
-
-        // ---------------------------------------------------------
-        // 3. OPEN PRODUCTS FACTS
-        // General non-food retail products.
-        // Useful for household / supermarket / consumer products.
-        // ---------------------------------------------------------
-
-        try {
-          const productsData = await fetchJsonWithTimeout(
-            `https://world.openproductsfacts.org/api/v2/product/${encodeURIComponent(code)}.json`,
-            5000
-          );
-
-          if (
-            productsData?.status === 1 &&
-            productsData?.product
-          ) {
-            const p = productsData.product;
-
-            pName = setIfMissing(
-              pName,
-              p.product_name ||
-                p.product_name_en ||
-                p.generic_name
-            );
-
-            pBrand = setIfMissing(
-              pBrand,
-              p.brands ||
-                p.brand_owner
-            );
-
-            pSub = setIfMissing(
-              pSub,
-              p.generic_name ||
-                p.quantity ||
-                p.categories
-            );
-
-            addImages([
-              p.image_front_url,
-              p.image_front_small_url,
-              p.image_front_thumb_url,
-              p.image_url,
-              p.image_small_url,
-              p.image_thumb_url,
-              p.image_packaging_url,
-              p.selected_images?.front?.display?.en,
-            ]);
-          }
-        } catch (e) {
-          console.log("Open Products Facts Error:", e?.message || e);
-        }
-
-        // ---------------------------------------------------------
-        // 4. OPEN BEAUTY FACTS
-        // Cosmetics / personal-care / beauty products.
-        // ---------------------------------------------------------
-
-        try {
-          const beautyData = await fetchJsonWithTimeout(
-            `https://world.openbeautyfacts.org/api/v2/product/${encodeURIComponent(code)}.json`,
-            5000
-          );
-
-          if (
-            beautyData?.status === 1 &&
-            beautyData?.product
-          ) {
-            const p = beautyData.product;
-
-            pName = setIfMissing(
-              pName,
-              p.product_name ||
-                p.product_name_en ||
-                p.generic_name
-            );
-
-            pBrand = setIfMissing(
-              pBrand,
-              p.brands ||
-                p.brand_owner
-            );
-
-            pSub = setIfMissing(
-              pSub,
-              p.generic_name ||
-                p.quantity ||
-                p.categories
-            );
-
-            addImages([
-              p.image_front_url,
-              p.image_front_small_url,
-              p.image_front_thumb_url,
-              p.image_url,
-              p.image_small_url,
-              p.image_thumb_url,
-              p.image_packaging_url,
-              p.selected_images?.front?.display?.en,
-            ]);
-          }
-        } catch (e) {
-          console.log("Open Beauty Facts Error:", e?.message || e);
-        }
-
-        // ---------------------------------------------------------
-        // 5. UPCitemdb
-        // General barcode database.
-        // Supports UPC / EAN / GTIN / ISBN and many retail items.
-        // ---------------------------------------------------------
-
-        try {
-          const upcData = await fetchJsonWithTimeout(
-            `https://api.upcitemdb.com/prod/trial/lookup?upc=${encodeURIComponent(code)}`,
-            5000
-          );
-
-          if (Array.isArray(upcData?.items) && upcData.items.length > 0) {
-            const item = upcData.items[0];
-
-            pName = setIfMissing(
-              pName,
-              item.title
-            );
-
-            pBrand = setIfMissing(
-              pBrand,
-              item.brand
-            );
-
-            pSub = setIfMissing(
-              pSub,
-              item.category ||
-                item.model ||
-                item.description
-            );
-
-            addImages(item.images);
-          }
-        } catch (e) {
-          console.log("UPCitemdb Error:", e?.message || e);
-        }
-
-        // ---------------------------------------------------------
-        // FINAL IMAGE CLEANUP
-        // ---------------------------------------------------------
-
-        const uniqueImageList = [
-          ...new Set(
-            imageList
-              .filter(Boolean)
-              .map((img) => String(img).trim())
-              .filter(
-                (img) =>
-                  img.startsWith("http://") ||
-                  img.startsWith("https://")
-              )
-              .map((img) =>
-                img.replace("http://", "https://")
-              )
-          ),
-        ];
-
-        imageList.length = 0;
-        imageList.push(...uniqueImageList);
-
-        const autoSearchQuery = `${pBrand} ${pName} ${pSub}`.trim() || pName.trim();
-        if (autoSearchQuery.length > 2) {
-          executeWebSearch(autoSearchQuery);
-        }
-
-        const uniqueImgs = [...new Set(imageList.filter(Boolean))];
-
-        setPredictName(pName);
-        setPredictBrand(pBrand);
-        setPredictSubName(pSub);
-        setPredictImages(uniqueImgs);
-        setPredictSelectedImage(uniqueImgs[0] || "");
-        setPredictPurchasePrice("");
-        setPredictSalesPrice("");
-        setPredictQty(1);
-        setPredictUnitType("Qty");
-      } catch (err) {
-        console.log("Prediction Fetch Error:", err);
-      } finally {
-        setPredictLoading(false);
+      if (code) {
+        await processIncomingBarcode(code);
       }
     }
   });
+
+  const handleGunKeystroke = (text) => {
+    setScannerBuffer(text);
+    if (scanDebounceTimerRef.current) clearTimeout(scanDebounceTimerRef.current);
+    scanDebounceTimerRef.current = setTimeout(async () => {
+      const candidate = text.trim();
+      if (candidate.length >= 6) {
+        setScannerBuffer("");
+        await processIncomingBarcode(candidate);
+      }
+    }, 280);
+  };
+
+  const handleGunSubmit = async () => {
+    if (scanDebounceTimerRef.current) clearTimeout(scanDebounceTimerRef.current);
+    const finalCode = scannerBuffer.trim();
+    setScannerBuffer("");
+    if (finalCode.length >= 3) {
+      await processIncomingBarcode(finalCode);
+    }
+  };
 
   const pickImage = () => {
     launchImageLibrary(
@@ -851,12 +744,12 @@ setTimeout(() => {
           const pickedUri = response.assets[0].uri;
           setPredictImages(prev => [pickedUri, ...prev]);
           setPredictSelectedImage(pickedUri);
+          setMissingFields(prev => prev.filter(f => f !== "Product Image"));
         }
       },
     );
   };
 
-  // DIRECT INVENTORY STORAGE & LIST INSERTION
   const handleConfirmPredictedProduct = async () => {
     if (!predictName.trim()) {
       Alert.alert("Required", "Please enter product name");
@@ -881,7 +774,6 @@ setTimeout(() => {
     const pQty = Number(predictQty) || 1;
 
     try {
-      // 1. Check if item exists in Firestore inventory
       const q = query(collection(db, "users", user.uid, inventoryCollection), where("barcode", "==", predictBarcode));
       const querySnapshot = await getDocs(q);
 
@@ -923,7 +815,6 @@ setTimeout(() => {
         savedDocId = docRef.id;
       }
 
-      // 2. Add to Scanned list in current session
       const newItem = {
         id: savedDocId,
         barcode: predictBarcode,
@@ -946,6 +837,7 @@ setTimeout(() => {
       });
 
       setPredictModalVisible(false);
+      focusGunScanner();
     } catch (err) {
       console.log("Error saving to inventory:", err);
       Alert.alert("Inventory Error", err.message);
@@ -953,73 +845,50 @@ setTimeout(() => {
   };
 
   const handleAddOrUpdateProduct = async () => {
-    if (!user || !tempProduct) return;
+    if (!tempProduct) return;
+    
     const finalName = editName || tempProduct.name || "New Product";
     const finalPrice = Number(purchasePrice) > 0 ? Number(purchasePrice) : Number(tempProduct.purchasePrice || 0);
     const finalSalesPrice = Number(salesPrice) || 0;
     const finalQty = Number(editQty) || 1;
     const finalBrand = editBrand || tempProduct.brand || "";
+    
     let finalImage = tempProduct.image || "";
     if (editImage) {
       finalImage = await uploadImageToStorage(editImage);
     }
 
-    try {
-      let productId = tempProduct?.id;
-      if (tempProduct?.id && tempProduct.id.length > 10 && !tempProduct.id.startsWith("NO-BARCODE-")) {
-        await updateDoc(doc(db, "users", user.uid, inventoryCollection, tempProduct.id), {
-          itemName: finalName,
-          brand: finalBrand,
-          image: finalImage,
-          purchasePrice: finalPrice,
-          salesPrice: finalSalesPrice,
-          quantity: finalQty,
-          category: selectedCategory,
-          unitType: unitType,
-          supplierName: supplierName
-        });
-      } else {
-        const docRef = await addDoc(collection(db, "users", user.uid, inventoryCollection), {
-          barcode: tempProduct.barcode,
-          itemName: finalName,
-          brand: finalBrand,
-          image: finalImage,
-          purchasePrice: finalPrice,
-          salesPrice: finalSalesPrice,
-          quantity: finalQty,
-          category: selectedCategory,
-          unitType: unitType,
-          supplierName: supplierName,
-          createdAt: serverTimestamp()
-        });
-        productId = docRef.id;
+    const updatedItem = {
+      ...tempProduct,
+      name: finalName,
+      brand: finalBrand,
+      image: finalImage,
+      purchasePrice: finalPrice,
+      salesPrice: finalSalesPrice,
+      qty: finalQty,
+      category: selectedCategory,
+      unitType: unitType,
+    };
+
+    setScannedList(prev => {
+      const exist = prev.find(i => i.barcode === tempProduct.barcode);
+      if (exist) {
+        return prev.map(i => i.barcode === tempProduct.barcode ? updatedItem : i);
       }
+      return [...prev, updatedItem];
+    });
 
-      const newItemForList = {
-        id: productId,
-        name: finalName,
-        brand: finalBrand,
-        image: finalImage,
-        barcode: tempProduct.barcode,
-        purchasePrice: finalPrice,
-        salesPrice: finalSalesPrice,
-        qty: finalQty,
-        category: selectedCategory,
-        unitType: unitType,
-      };
-
-      setScannedList(prev => {
-        const exist = prev.find(i => i.barcode === tempProduct.barcode);
-        if (exist) {
-          return prev.map(i => i.barcode === tempProduct.barcode ? { ...i, ...newItemForList, qty: i.qty + finalQty } : i);
-        }
-        return [...prev, newItemForList];
-      });
-
-      setModalVisible(false);
-      setFormStep(1);
-      setTempProduct(null); setEditName(""); setEditBrand(""); setEditImage(""); setPurchasePrice(""); setSalesPrice(""); setEditQty("1"); setSelectedCategory("");
-    } catch (error) { Alert.alert("Error", error.message); }
+    setModalVisible(false);
+    setFormStep(1);
+    setTempProduct(null); 
+    setEditName(""); 
+    setEditBrand(""); 
+    setEditImage(""); 
+    setPurchasePrice(""); 
+    setSalesPrice(""); 
+    setEditQty("1"); 
+    setSelectedCategory("");
+    focusGunScanner();
   };
 
   const handleAddAllItems = async () => {
@@ -1046,7 +915,6 @@ setTimeout(() => {
 
     try {
       if (user) {
-        // Double check inventory sync for all items
         for (const it of scannedList) {
           const q = query(collection(db, "users", user.uid, inventoryCollection), where("barcode", "==", it.barcode));
           const snap = await getDocs(q);
@@ -1079,7 +947,13 @@ setTimeout(() => {
           billNo: purchaseNo,
           invoiceId: purchaseNo,
           supplierName: supplierName || "Walk-in Supplier",
-          items: newBill.map(i => ({ itemName: i.name, purchasePrice: Number(i.purchasePrice || 0), qty: Number(i.qty || 1), unitType: i.unitType || "Qty" })),
+          items: newBill.map(i => ({ 
+            itemName: i.name, 
+            purchasePrice: Number(i.purchasePrice || 0), 
+            salesPrice: Number(i.salesPrice || 0), 
+            qty: Number(i.qty || 1), 
+            unitType: i.unitType || "Qty" 
+          })),
           total: Number(purchaseTotal),
           createdAt: serverTimestamp()
         });
@@ -1090,7 +964,10 @@ setTimeout(() => {
     setScannedList([]);
     setAddingAll(false);
     setSuccessVisible(true);
-    setTimeout(() => { setSuccessVisible(false); }, 1800);
+    setTimeout(() => { 
+      setSuccessVisible(false); 
+      focusGunScanner();
+    }, 1800);
   };
 
   const filteredCategoryProducts = items.filter(item => {
@@ -1102,8 +979,28 @@ setTimeout(() => {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <StatusBar barStyle={darkMode ? "light-content" : "dark-content"} backgroundColor={theme.background} />
+
+      {/* SILENT HARDWARE GUN SCANNER ENGINE */}
+      <View style={styles.gunListenerWrapper} pointerEvents="box-none">
+        <TextInput
+          ref={hiddenScannerRef}
+          style={styles.gunHiddenInput}
+          autoFocus={true}
+          showSoftInputOnFocus={false}
+          caretHidden={true}
+          contextMenuHidden={true}
+          disableFullscreenUI={true}
+          keyboardType="numeric"
+          autoCorrect={false}
+          autoCapitalize="none"
+          value={scannerBuffer}
+          onChangeText={handleGunKeystroke}
+          onSubmitEditing={handleGunSubmit}
+          blurOnSubmit={false}
+        />
+      </View>
       
-      {/* HIDDEN IN-MEMORY HEADLESS GOOGLE IMAGE SCRAPER WEBVIEW */}
+      {/* HIDDEN IN-MEMORY HEADLESS GOOGLE IMAGE SCRAPER */}
       {scraperUrl !== "" && (
         <View style={{ width: 0, height: 0, opacity: 0, position: 'absolute' }}>
           <WebView
@@ -1118,295 +1015,399 @@ setTimeout(() => {
         </View>
       )}
 
-      {/* HEADER WITH SHOP NAME & ICONS */}
+      {/* HEADER */}
       <View style={[styles.topWhiteHeader, { backgroundColor: theme.card, borderBottomColor: darkMode ? "#334155" : "#e2e8f0" }]}>
         <View style={[styles.shopBadge, { backgroundColor: darkMode ? "#1e293b" : "#eef2ff" }]}>
           <Icon name="cube-box" size={22} color="#6366f1" />
           <Text style={[styles.shopNameText, { color: darkMode ? "#f8fafc" : "#6366f1" }]}>{shopName}</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity style={[styles.headerIconBtn, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]}>
+          <TouchableOpacity focusable={false} style={[styles.headerIconBtn, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]}>
             <Icon name="magnify" size={24} color={darkMode ? "#cbd5e1" : "#475569"} />
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.headerIconBtn, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]}>
+          <TouchableOpacity focusable={false} style={[styles.headerIconBtn, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]}>
             <Icon name="history" size={24} color={darkMode ? "#cbd5e1" : "#475569"} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* ROUNDED SQUARE CAMERA VIEW FRAME */}
-      <View style={[styles.cameraOuterWrapper, { backgroundColor: theme.background }]}>
-        <View style={styles.cameraFrameContainer}>
-          {device && (
-            <Camera
-              style={StyleSheet.absoluteFill}
-              device={device}
-              isActive={true}
-              codeScanner={codeScanner}
-              torch={torch}
-            /> 
-          )}
-          <View style={styles.overlay}>
-            {/* CAMERA CONTROLS */}
-            <View style={styles.cameraControlRow}>
-              <TouchableOpacity
-                style={styles.actionCircleBtn}
-                onPress={() => setTorch(prev => prev === "on" ? "off" : "on")}
-              >
-                <Icon name={torch === "on" ? "flash" : "flash-off"} size={22} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.actionCircleBtn}
-                onPress={() => setCameraPosition(prev => prev === "back" ? "front" : "back")}
-              >
-                <Icon name="camera-flip" size={22} color="#fff" />
-              </TouchableOpacity>
-            </View>
+      {/* 📱💻 RESPONSIVE MASTER LAYOUT */}
+      <View style={[styles.mainLayout, isLandscape && styles.landscapeMainLayout]}>
+        
+        {/* 📷 LEFT PANE (CAMERA & SEARCH BAR) */}
+        <View style={[styles.leftSection, isLandscape && styles.landscapeLeftSection]}>
+          <View style={[styles.cameraOuterWrapper, isLandscape && styles.landscapeCameraOuterWrapper, { backgroundColor: theme.background }]}>
+            <View style={styles.cameraFrameContainer}>
+              {device && (
+                <Camera
+                  style={StyleSheet.absoluteFill}
+                  device={device}
+                  isActive={true}
+                  codeScanner={codeScanner}
+                  torch={torch}
+                /> 
+              )}
+              <View style={styles.overlay}>
+                <View style={styles.cameraControlRow}>
+                  <TouchableOpacity
+                    focusable={false}
+                    style={styles.actionCircleBtn}
+                    onPress={() => setTorch(prev => prev === "on" ? "off" : "on")}
+                  >
+                    <Icon name={torch === "on" ? "flash" : "flash-off"} size={22} color="#fff" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    focusable={false}
+                    style={styles.actionCircleBtn}
+                    onPress={() => setCameraPosition(prev => prev === "back" ? "front" : "back")}
+                  >
+                    <Icon name="camera-flip" size={22} color="#fff" />
+                  </TouchableOpacity>
+                </View>
 
-            {/* CENTERED SCAN TARGET */}
-            <View style={styles.scanRow}>
-              <View style={styles.salesScanBox}>
-                <View style={[styles.corner, styles.topLeft]} />
-                <View style={[styles.corner, styles.topRight]} />
-                <View style={[styles.corner, styles.bottomLeft]} />
-                <View style={[styles.corner, styles.bottomRight]} />
-                <Text style={styles.scanText}>Scan Here</Text>
-                <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 11, marginTop: 2 }}>Align barcode inside the box</Text>
+                <View style={styles.scanRow}>
+                  <View style={[styles.salesScanBox, isLandscape && styles.tabletSalesScanBox]}>
+                    <View style={[styles.corner, styles.topLeft]} />
+                    <View style={[styles.corner, styles.topRight]} />
+                    <View style={[styles.corner, styles.bottomLeft]} />
+                    <View style={[styles.corner, styles.bottomRight]} />
+                    <Text style={styles.scanText}>Camera / Gun Scanner Active</Text>
+                    <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 11, marginTop: 2 }}>Scan using Camera or Helett Scanner</Text>
 
-                <View style={{ backgroundColor: currentMode === "global" ? "#16a34a" : "#6366f1", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginTop: 8 }}>
-                  <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 10 }}>{currentMode.toUpperCase()} MODE</Text>
+                    <View style={{ backgroundColor: currentMode === "global" ? "#16a34a" : "#6366f1", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginTop: 6 }}>
+                      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 10 }}>{currentMode.toUpperCase()} MODE</Text>
+                    </View>
+                  </View>
                 </View>
               </View>
             </View>
           </View>
-        </View>
-      </View>
 
-      {/* BOTTOM PANEL SHEET */}
-      <View style={[styles.bottomWhiteContainer, { backgroundColor: theme.card }]}>
-        <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
-          <TextInput
-            placeholder={`Search ${currentMode} inventory...`}
-            value={searchText}
-            placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
-            onChangeText={setSearchText}
-            style={{ flex: 1, backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderWidth: 1, borderColor: darkMode ? "#334155" : "#cbd5e1", padding: 12, borderRadius: 12, color: theme.text }}
-          />
-          
-          {/* (+) ICON CLICK OPENS SAME BOTTOM SHEET PREDICT POPUP */}
-          <TouchableOpacity
-            onPress={() => {
-              const customBarcode = "MANUAL-" + Date.now().toString().slice(-6);
-              setPredictBarcode(customBarcode);
-              setPredictName("");
-              setPredictBrand("");
-              setPredictSubName("");
-              setPredictImages([]);
-              setPredictSelectedImage("");
-              setPredictPurchasePrice("");
-              setPredictSalesPrice("");
-              setPredictQty(1);
-              setPredictUnitType("Qty");
-              setPredictLoading(false);
-              setPredictModalVisible(true);
-            }}
-            style={{ width: 48, height: 48, backgroundColor: "#6366f1", borderRadius: 12, justifyContent: "center", alignItems: "center", marginLeft: 10 }}
-          >
-            <Text style={{ color: "#fff", fontSize: 28, fontWeight: "bold" }}>+</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={[styles.title, { color: theme.text }]}>Scanned Items</Text>
-        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-          {searchText.trim().length > 0 ? (
-            filteredItems.map((item) => (
-              <View key={item.id} style={[styles.itemCard, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
-                <Text style={{ color: theme.text, flex: 1, fontWeight: '700' }}>{item.itemName}</Text>
-                <Text style={{ color: "#22c55e", marginRight: 10, fontWeight: '600' }}>₹{item.salesPrice || 0}</Text>
-              </View>
-            ))
-          ) : (
-            scannedList.map((item) => (
-              <View key={item.barcode} style={[styles.itemCard, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0", justifyContent: 'space-between', alignItems: 'center' }]}>
-                {item.image ? (
-                  <Image source={{ uri: item.image }} style={{ width: 40, height: 40, borderRadius: 8, marginRight: 8 }} />
-                ) : null}
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: theme.text, fontWeight: '700' }}>{item.name}</Text>
-                  {item.brand ? <Text style={{ color: darkMode ? "#94a3b8" : "#64748b", fontSize: 11 }}>{item.brand}</Text> : null}
-                </View>
-
-                {/* QUANTITY CONTROLLER (- qty +) */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 8 }}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setScannedList(prev => prev.map(i => i.barcode === item.barcode ? { ...i, qty: Math.max(1, (i.qty || 1) - 1) } : i));
-                    }}
-                    style={styles.qtyBtn}
-                  >
-                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>-</Text>
-                  </TouchableOpacity>
-
-                  <Text style={{ color: theme.text, marginHorizontal: 8, fontWeight: 'bold' }}>{item.qty || 1}</Text>
-
-                  <TouchableOpacity
-                    onPress={() => {
-                      setScannedList(prev => prev.map(i => i.barcode === item.barcode ? { ...i, qty: (i.qty || 1) + 1 } : i));
-                    }}
-                    style={styles.qtyBtn}
-                  >
-                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>+</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* EDIT & CANCEL BUTTONS */}
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setTempProduct(item);
-                      setFormStep(1);
-                      setEditName(item.name || ""); setEditBrand(item.brand || ""); setEditImage(item.image || ""); setPurchasePrice(String(item.purchasePrice || "")); setSalesPrice(String(item.salesPrice || "")); setEditQty(String(item.qty || "1")); setSelectedCategory(item.category || "");
-                      setModalVisible(true);
-                    }}
-                    style={{ backgroundColor: "#22c55e", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, marginRight: 4 }}
-                  >
-                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: 'bold' }}>Edit</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity onPress={() => { setScannedList(prev => prev.filter(i => i.barcode !== item.barcode)); }} style={{ backgroundColor: "#ef4444", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6 }}>
-                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: 'bold' }}>Cancel</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))
-          )}
-        </ScrollView>
-
-        {scannedList.length > 0 && (
-          <TouchableOpacity onPress={handleAddAllItems} style={{ backgroundColor:"#16a34a", padding:14, borderRadius:12, marginVertical:10, alignItems:"center" }}>
-            <Text style={{ color:"#fff", fontWeight:"bold", fontSize:16 }}>➕ Add ({scannedList.reduce((acc, curr) => acc + (curr.qty || 1), 0)}) Items</Text>
-          </TouchableOpacity>
-        )}
-
-        <View style={[styles.billSummaryBox, { backgroundColor: darkMode ? "#1e293b" : "#0f172a" }]}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
-            <Icon name="receipt" size={20} color="#fff" style={{ marginRight: 6 }} />
-            <Text style={{ color: "#fff", fontSize: 15, fontWeight: '700' }}>Bill ({currentMode.toUpperCase()})</Text>
+          {/* 🔍 PRODUCT SEARCH BAR */}
+          <View style={[styles.searchRowContainer, { backgroundColor: theme.card, paddingHorizontal: isLandscape ? 0 : 16 }]}>
+            <TextInput
+              placeholder={`Search ${currentMode} inventory...`}
+              value={searchText}
+              placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
+              onChangeText={setSearchText}
+              onBlur={focusGunScanner}
+              style={{ flex: 1, backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderWidth: 1, borderColor: darkMode ? "#334155" : "#cbd5e1", padding: 10, borderRadius: 12, color: theme.text, height: 44 }}
+            />
+            
+            <TouchableOpacity
+              focusable={false}
+              onPress={() => {
+                const customBarcode = "MANUAL-" + Date.now().toString().slice(-6);
+                setPredictBarcode(customBarcode);
+                setPredictName("");
+                setPredictBrand("");
+                setPredictSubName("");
+                setPredictImages([]);
+                setPredictSelectedImage("");
+                setPredictPurchasePrice("");
+                setPredictSalesPrice("");
+                setPredictQty(1);
+                setPredictUnitType("Qty");
+                setMissingFields(["Product Name", "Purchase Price", "Sales Price", "Product Image"]);
+                setPredictLoading(false);
+                setPredictModalVisible(true);
+              }}
+              style={{ width: 44, height: 44, backgroundColor: "#6366f1", borderRadius: 12, justifyContent: "center", alignItems: "center", marginLeft: 8 }}
+            >
+              <Text style={{ color: "#fff", fontSize: 24, fontWeight: "bold" }}>+</Text>
+            </TouchableOpacity>
           </View>
-          <ScrollView style={{ maxHeight: 75 }} showsVerticalScrollIndicator={false}>
-            {bill.map((item) => (
-              <View key={item.barcode} style={{ flexDirection: "row", justifyContent: "space-between", marginVertical: 3 }}>
-                <Text style={{ color: "#cbd5e1", fontSize: 13 }}>{item.name} x {item.unitType === "Kg" ? `${item.qty} Kg` : item.unitType === "Gram" ? `${item.qty} Gram` : item.qty}</Text>
-                <Text style={{ color: "#22c55e", fontSize: 13, fontWeight: '600' }}>₹ {item.purchasePrice * item.qty}</Text>
-              </View>
-            ))}
+        </View>
+
+        {/* 🛒 RIGHT PANE (SCANNED ITEMS & BILL SUMMARY) */}
+        <View style={[styles.bottomWhiteContainer, isLandscape && styles.landscapeRightSection, { backgroundColor: theme.card }]}>
+          <Text style={[styles.title, { color: theme.text }]}>Scanned Items</Text>
+          <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            {searchText.trim().length > 0 ? (
+              filteredItems.map((item) => (
+                <View key={item.id} style={[styles.itemCard, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
+                  <Text style={{ color: theme.text, flex: 1, fontWeight: '700' }}>{item.itemName}</Text>
+                  <Text style={{ color: "#22c55e", marginRight: 10, fontWeight: '600' }}>₹{item.salesPrice || 0}</Text>
+                </View>
+              ))
+            ) : (
+              scannedList.map((item) => {
+                const isNameDone = Boolean(item.name && item.name.trim().length > 0);
+                const isBrandDone = Boolean(item.brand && item.brand.trim().length > 0);
+                const isPriceDone = Boolean(Number(item.purchasePrice) > 0 && Number(item.salesPrice) > 0);
+                const isImageDone = Boolean(item.image && item.image.trim().length > 0);
+
+                return (
+                  <View key={item.barcode} style={[styles.itemCard, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0", flexDirection: 'column', alignItems: 'stretch' }]}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      {item.image ? (
+                        <Image source={{ uri: item.image }} style={{ width: 40, height: 40, borderRadius: 8, marginRight: 8 }} />
+                      ) : null}
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: theme.text, fontWeight: '700' }}>{item.name}</Text>
+                        {item.brand ? <Text style={{ color: darkMode ? "#94a3b8" : "#64748b", fontSize: 11 }}>{item.brand}</Text> : null}
+                        <Text style={{ color: darkMode ? "#94a3b8" : "#64748b", fontSize: 10 }}>Pur: ₹{item.purchasePrice || 0} | Sale: ₹{item.salesPrice || 0}</Text>
+                      </View>
+
+                      {/* QUANTITY CONTROLLER */}
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 8 }}>
+                        <TouchableOpacity
+                          focusable={false}
+                          onPress={() => {
+                            setScannedList(prev => prev.map(i => i.barcode === item.barcode ? { ...i, qty: Math.max(1, (i.qty || 1) - 1) } : i));
+                          }}
+                          style={styles.qtyBtn}
+                        >
+                          <Text style={{ color: '#fff', fontWeight: 'bold' }}>-</Text>
+                        </TouchableOpacity>
+
+                        <Text style={{ color: theme.text, marginHorizontal: 8, fontWeight: 'bold' }}>{item.qty || 1}</Text>
+
+                        <TouchableOpacity
+                          focusable={false}
+                          onPress={() => {
+                            setScannedList(prev => prev.map(i => i.barcode === item.barcode ? { ...i, qty: (i.qty || 1) + 1 } : i));
+                          }}
+                          style={styles.qtyBtn}
+                        >
+                          <Text style={{ color: '#fff', fontWeight: 'bold' }}>+</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* EDIT & CANCEL BUTTONS */}
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity
+                          focusable={false}
+                          onPress={() => {
+                            setTempProduct(item);
+                            setFormStep(1);
+                            setEditName(item.name || ""); 
+                            setEditBrand(item.brand || ""); 
+                            setEditImage(item.image || ""); 
+                            setPurchasePrice(String(item.purchasePrice || "")); 
+                            setSalesPrice(String(item.salesPrice || "")); 
+                            setEditQty(String(item.qty || "1")); 
+                            setSelectedCategory(item.category || "");
+                            setModalVisible(true);
+                          }}
+                          style={{ backgroundColor: "#22c55e", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, marginRight: 4 }}
+                        >
+                          <Text style={{ color: "#fff", fontSize: 11, fontWeight: 'bold' }}>Edit</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity focusable={false} onPress={() => { setScannedList(prev => prev.filter(i => i.barcode !== item.barcode)); }} style={{ backgroundColor: "#ef4444", paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6 }}>
+                          <Text style={{ color: "#fff", fontSize: 11, fontWeight: 'bold' }}>Cancel</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {/* 🎯 STEPPER PROGRESS BAR FOR SCANNED ITEM */}
+                    <View style={[stepperStyles.container, { backgroundColor: darkMode ? "#0f172a" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0", marginTop: 8, marginBottom: 0, paddingVertical: 8 }]}>
+                      <View style={stepperStyles.stepsRow}>
+                        <StepItem 
+                          label="Product Name" 
+                          stepNumber={1} 
+                          isCompleted={isNameDone} 
+                        />
+                        <StepItem 
+                          label="Brand Name" 
+                          stepNumber={2} 
+                          isCompleted={isBrandDone} 
+                        />
+                        <StepItem 
+                          label="Pricing" 
+                          stepNumber={3} 
+                          isCompleted={isPriceDone} 
+                        />
+                        <StepItem 
+                          label="Image" 
+                          stepNumber={4} 
+                          isCompleted={isImageDone} 
+                          isLast={true}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
           </ScrollView>
-          <View style={{ borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 6, marginTop: 4, flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={{ color: "#fff", fontWeight: 'bold' }}>Total:</Text>
-            <Text style={{ color: "#22c55e", fontWeight: 'bold', fontSize: 16 }}>₹ {bill.reduce((sum, i) => sum + (i.purchasePrice || 0) * i.qty, 0)}</Text>
+
+          {scannedList.length > 0 && (
+            <TouchableOpacity focusable={false} onPress={handleAddAllItems} style={{ backgroundColor:"#16a34a", padding:12, borderRadius:12, marginVertical:8, alignItems:"center" }}>
+              <Text style={{ color:"#fff", fontWeight:"bold", fontSize:15 }}>➕ Add ({scannedList.reduce((acc, curr) => acc + (curr.qty || 1), 0)}) Items</Text>
+            </TouchableOpacity>
+          )}
+
+          <View style={[styles.billSummaryBox, { backgroundColor: darkMode ? "#1e293b" : "#0f172a" }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+              <Icon name="receipt" size={20} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={{ color: "#fff", fontSize: 15, fontWeight: '700' }}>Bill ({currentMode.toUpperCase()})</Text>
+            </View>
+            <ScrollView style={{ maxHeight: 75 }} showsVerticalScrollIndicator={false}>
+              {bill.map((item) => (
+                <View key={item.barcode} style={{ flexDirection: "row", justifyContent: "space-between", marginVertical: 3 }}>
+                  <Text style={{ color: "#cbd5e1", fontSize: 13 }}>{item.name} x {item.qty}</Text>
+                  <Text style={{ color: "#22c55e", fontSize: 13, fontWeight: '600' }}>₹ {item.purchasePrice * item.qty}</Text>
+                </View>
+              ))}
+            </ScrollView>
+            <View style={{ borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 6, marginTop: 4, flexDirection: 'row', justifyContent: 'space-between' }}>
+              <Text style={{ color: "#fff", fontWeight: 'bold' }}>Total:</Text>
+              <Text style={{ color: "#22c55e", fontWeight: 'bold', fontSize: 16 }}>₹ {bill.reduce((sum, i) => sum + (i.purchasePrice || 0) * i.qty, 0)}</Text>
+            </View>
+            <TouchableOpacity focusable={false} onPress={handleProcessPurchaseInvoice} style={{ backgroundColor: "#22c55e", padding: 12, borderRadius: 12, marginTop: 8 }}>
+              <Text style={{ color: "#fff", textAlign: "center", fontWeight: "bold" }}>View Purchase Receipt</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity onPress={handleProcessPurchaseInvoice} style={{ backgroundColor: "#22c55e", padding: 12, borderRadius: 12, marginTop: 10 }}>
-            <Text style={{ color: "#fff", textAlign: "center", fontWeight: "bold" }}>View Purchase Receipt</Text>
-          </TouchableOpacity>
         </View>
+
       </View>
 
-      {/* SMART BARCODE PREDICT CARD MODAL */}
+      {/* 🚀 SMART BARCODE PREDICT CARD MODAL */}
       <Modal visible={predictModalVisible} transparent animationType="slide">
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" }}>
-          <View style={{ backgroundColor: darkMode ? "#1e293b" : "#ffffff", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "88%" }}>
+          <View style={{ backgroundColor: darkMode ? "#1e293b" : "#ffffff", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "90%" }}>
             
             {predictLoading ? (
               <View style={{ paddingVertical: 40, alignItems: "center" }}>
                 <ActivityIndicator size="large" color="#6366f1" />
-                <Text style={{ marginTop: 12, fontWeight: "700", color: theme.text }}>Predicting & Searching Web Images...</Text>
+                <Text style={{ marginTop: 12, fontWeight: "700", color: theme.text }}>Gathering details from barcode...</Text>
                 <Text style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>Barcode: {predictBarcode}</Text>
               </View>
             ) : (
               <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Header */}
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <View>
                     <Text style={{ fontSize: 18, fontWeight: "800", color: theme.text }}>📦 Product Predicted</Text>
                     <Text style={{ fontSize: 12, color: "#64748b" }}>Barcode: {predictBarcode}</Text>
                   </View>
-                  <TouchableOpacity onPress={() => setPredictModalVisible(false)} style={{ padding: 4 }}>
+                  <TouchableOpacity focusable={false} onPress={() => { setPredictModalVisible(false); focusGunScanner(); }} style={{ padding: 4 }}>
                     <Icon name="close" size={24} color={darkMode ? "#94a3b8" : "#64748b"} />
                   </TouchableOpacity>
                 </View>
 
-                {/* WhatsApp-Style 'Search Web' Button Row */}
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 8 }}>
-                  <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text }}>Select Product Image</Text>
-                  
-                  <TouchableOpacity 
-                    onPress={handleOpenWebSearchModal} 
-                    style={{ flexDirection: "row", alignItems: "center", backgroundColor: darkMode ? "#334155" : "#e0e7ff", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 }}
-                  >
-                    <Icon name="magnify" size={16} color="#6366f1" style={{ marginRight: 4 }} />
-                    <Text style={{ fontSize: 11, fontWeight: "800", color: "#6366f1" }}>Search web</Text>
-                  </TouchableOpacity>
+                {/* 🎯 STEPPER PROGRESS BAR */}
+                <View style={[stepperStyles.container, { backgroundColor: darkMode ? "#0f172a" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
+                  <View style={stepperStyles.stepsRow}>
+                    <StepItem 
+                      label="Product Name" 
+                      stepNumber={1} 
+                      isCompleted={Boolean(predictName && predictName.trim().length > 0)} 
+                    />
+                    <StepItem 
+                      label="Brand Name" 
+                      stepNumber={2} 
+                      isCompleted={Boolean(predictBrand && predictBrand.trim().length > 0)} 
+                    />
+                    <StepItem 
+                      label="Pricing" 
+                      stepNumber={3} 
+                      isCompleted={Boolean(predictPurchasePrice && Number(predictPurchasePrice) > 0 && predictSalesPrice && Number(predictSalesPrice) > 0)} 
+                    />
+                    <StepItem 
+                      label="Image" 
+                      stepNumber={4} 
+                      isCompleted={Boolean(predictSelectedImage && predictSelectedImage.trim().length > 0)} 
+                      isLast={true}
+                    />
+                  </View>
                 </View>
 
-                {/* Horizontal Image Carousel */}
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: "row", marginBottom: 12 }}>
-                  {predictImages.map((imgUri, index) => (
-                    <TouchableOpacity
-                      key={index}
-                      onPress={() => setPredictSelectedImage(imgUri)}
-                      style={{
-                        width: 76,
-                        height: 76,
-                        borderRadius: 12,
-                        marginRight: 10,
-                        borderWidth: 2,
-                        borderColor: predictSelectedImage === imgUri ? "#22c55e" : (darkMode ? "#334155" : "#cbd5e1"),
-                        overflow: "hidden",
-                        backgroundColor: "#f8fafc"
-                      }}
-                    >
-                      <Image source={{ uri: imgUri }} style={{ width: "100%", height: "100%" }} resizeMode="contain" />
-                    </TouchableOpacity>
-                  ))}
-
-                  {/* Upload Custom Image */}
+                {/* 📸 CAMERA ICON (LEFT) + PRODUCT NAME (RIGHT) */}
+                <View style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 14 }}>
                   <TouchableOpacity
+                    focusable={false}
                     onPress={pickPredictCustomImage}
                     style={{
-                      width: 76,
-                      height: 76,
-                      borderRadius: 12,
+                      width: 84,
+                      height: 84,
+                      borderRadius: 14,
                       borderWidth: 2,
-                      borderStyle: "dashed",
-                      borderColor: "#6366f1",
+                      borderColor: predictSelectedImage ? "#22c55e" : "#6366f1",
+                      borderStyle: predictSelectedImage ? "solid" : "dashed",
                       justifyContent: "center",
                       alignItems: "center",
-                      backgroundColor: darkMode ? "#0f172a" : "#eef2ff"
+                      backgroundColor: darkMode ? "#0f172a" : "#f1f5f9",
+                      overflow: "hidden",
+                      marginRight: 12
                     }}
                   >
-                    <Icon name="camera-plus" size={24} color="#6366f1" />
-                    <Text style={{ fontSize: 10, color: "#6366f1", fontWeight: "bold", marginTop: 2 }}>Upload</Text>
+                    {predictSelectedImage ? (
+                      <Image source={{ uri: predictSelectedImage }} style={{ width: "100%", height: "100%" }} resizeMode="contain" />
+                    ) : (
+                      <View style={{ alignItems: "center" }}>
+                        <Icon name="camera-plus" size={28} color="#6366f1" />
+                        <Text style={{ fontSize: 10, color: "#6366f1", fontWeight: "bold", marginTop: 2 }}>Upload</Text>
+                      </View>
+                    )}
                   </TouchableOpacity>
-                </ScrollView>
 
-                {/* Product Name Input */}
-                <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b", marginTop: 6 }}>Product Name *</Text>
-                <TextInput
-                  value={predictName}
-                  onChangeText={setPredictName}
-                  placeholder="e.g. 3 Roses or Fivestar"
-                  placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
-                  style={[styles.input, { marginTop: 4, textAlign: "left", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", color: theme.text, borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
-                />
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b" }}>Product Name *</Text>
+                      <TouchableOpacity 
+                        focusable={false} 
+                        onPress={handleOpenWebSearchModal} 
+                        style={{ flexDirection: "row", alignItems: "center", backgroundColor: darkMode ? "#334155" : "#e0e7ff", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}
+                      >
+                        <Icon name="magnify" size={14} color="#6366f1" style={{ marginRight: 2 }} />
+                        <Text style={{ fontSize: 10, fontWeight: "700", color: "#6366f1" }}>Search web</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <TextInput
+                      value={predictName}
+                      onChangeText={(val) => {
+                        setPredictName(val);
+                        if (val.trim()) setMissingFields(prev => prev.filter(f => f !== "Product Name"));
+                      }}
+                      placeholder="e.g. 3 Roses or Fivestar"
+                      placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
+                      style={[styles.input, { marginTop: 6, textAlign: "left", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", color: theme.text, borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
+                    />
+                  </View>
+                </View>
 
-                {/* Brand & Sub-Name Row */}
-                <View style={{ flexDirection: "row", marginTop: 8 }}>
+                {predictImages.length > 0 && (
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={{ fontSize: 11, fontWeight: "600", color: "#64748b", marginBottom: 6 }}>Suggested Images</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      {predictImages.map((imgUri, index) => (
+                        <TouchableOpacity
+                          focusable={false}
+                          key={index}
+                          onPress={() => {
+                            setPredictSelectedImage(imgUri);
+                            setMissingFields(prev => prev.filter(f => f !== "Product Image"));
+                          }}
+                          style={{
+                            width: 50,
+                            height: 50,
+                            borderRadius: 10,
+                            marginRight: 8,
+                            borderWidth: 2,
+                            borderColor: predictSelectedImage === imgUri ? "#22c55e" : (darkMode ? "#334155" : "#cbd5e1"),
+                            overflow: "hidden",
+                            backgroundColor: "#f8fafc"
+                          }}
+                        >
+                          <Image source={{ uri: imgUri }} style={{ width: "100%", height: "100%" }} resizeMode="contain" />
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+
+                <View style={{ flexDirection: "row", marginTop: 4 }}>
                   <View style={{ flex: 1, marginRight: 6 }}>
                     <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b" }}>Brand Name</Text>
                     <TextInput
                       value={predictBrand}
-                      onChangeText={setPredictBrand}
-                      placeholder="e.g. Cadbury / Brooke Bond"
+                      onChangeText={(val) => {
+                        setPredictBrand(val);
+                        if (val.trim()) setMissingFields(prev => prev.filter(f => f !== "Brand Name"));
+                      }}
+                      placeholder="e.g. Cadbury / Nestle"
                       placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
                       style={[styles.input, { marginTop: 4, textAlign: "left", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", color: theme.text, borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
                     />
@@ -1416,51 +1417,69 @@ setTimeout(() => {
                     <TextInput
                       value={predictSubName}
                       onChangeText={setPredictSubName}
-                      placeholder="e.g. Chocolate / Natural Care"
+                      placeholder="e.g. Chocolate / 250g"
                       placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
                       style={[styles.input, { marginTop: 4, textAlign: "left", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", color: theme.text, borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
                     />
                   </View>
                 </View>
 
-                {/* Price & Quantity with +/- Buttons */}
-                <View style={{ flexDirection: "row", alignItems: "center", marginTop: 8 }}>
+                <View style={{ flexDirection: "row", marginTop: 8 }}>
                   <View style={{ flex: 1, marginRight: 6 }}>
                     <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b" }}>Purchase Price (₹)</Text>
                     <TextInput
                       keyboardType="numeric"
                       value={predictPurchasePrice}
-                      onChangeText={setPredictPurchasePrice}
+                      onChangeText={(val) => {
+                        setPredictPurchasePrice(val);
+                        if (val && Number(val) > 0) setMissingFields(prev => prev.filter(f => f !== "Purchase Price"));
+                      }}
                       placeholder="0"
                       placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
                       style={[styles.input, { marginTop: 4, textAlign: "left", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", color: theme.text, borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
                     />
                   </View>
-
                   <View style={{ flex: 1, marginLeft: 6 }}>
-                    <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b", marginBottom: 4 }}>Quantity</Text>
-                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: darkMode ? "#334155" : "#cbd5e1", borderRadius: 10, padding: 6, backgroundColor: darkMode ? "#0f172a" : "#f8fafc" }}>
-                      <TouchableOpacity
-                        onPress={() => setPredictQty(prev => Math.max(1, prev - 1))}
-                        style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: "#6366f1", justifyContent: "center", alignItems: "center" }}
-                      >
-                        <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 18 }}>-</Text>
-                      </TouchableOpacity>
-                      <Text style={{ fontSize: 16, fontWeight: "bold", color: theme.text }}>{predictQty}</Text>
-                      <TouchableOpacity
-                        onPress={() => setPredictQty(prev => prev + 1)}
-                        style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: "#6366f1", justifyContent: "center", alignItems: "center" }}
-                      >
-                        <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 18 }}>+</Text>
-                      </TouchableOpacity>
-                    </View>
+                    <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b" }}>Sales Price (₹)</Text>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={predictSalesPrice}
+                      onChangeText={(val) => {
+                        setPredictSalesPrice(val);
+                        if (val && Number(val) > 0) setMissingFields(prev => prev.filter(f => f !== "Sales Price"));
+                      }}
+                      placeholder="0"
+                      placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
+                      style={[styles.input, { marginTop: 4, textAlign: "left", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", color: theme.text, borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
+                    />
                   </View>
                 </View>
 
-                {/* Confirm Add Button */}
+                <View style={{ marginTop: 10 }}>
+                  <Text style={{ fontSize: 12, fontWeight: "700", color: "#64748b", marginBottom: 4 }}>Quantity</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: darkMode ? "#334155" : "#cbd5e1", borderRadius: 10, padding: 6, backgroundColor: darkMode ? "#0f172a" : "#f8fafc" }}>
+                    <TouchableOpacity
+                      focusable={false}
+                      onPress={() => setPredictQty(prev => Math.max(1, prev - 1))}
+                      style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: "#6366f1", justifyContent: "center", alignItems: "center" }}
+                    >
+                      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 18 }}>-</Text>
+                    </TouchableOpacity>
+                    <Text style={{ fontSize: 16, fontWeight: "bold", color: theme.text }}>{predictQty}</Text>
+                    <TouchableOpacity
+                      focusable={false}
+                      onPress={() => setPredictQty(prev => prev + 1)}
+                      style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: "#6366f1", justifyContent: "center", alignItems: "center" }}
+                    >
+                      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 18 }}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
                 <TouchableOpacity
+                  focusable={false}
                   onPress={handleConfirmPredictedProduct}
-                  style={{ backgroundColor: "#16a34a", padding: 14, borderRadius: 12, marginTop: 20, alignItems: "center" }}
+                  style={{ backgroundColor: "#16a34a", padding: 14, borderRadius: 12, marginTop: 18, alignItems: "center" }}
                 >
                   <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 16 }}>✓ Add to Scanned List</Text>
                 </TouchableOpacity>
@@ -1471,14 +1490,13 @@ setTimeout(() => {
         </View>
       </Modal>
 
-      {/* WHATSAPP-STYLE FULL-SCREEN WEB IMAGE SEARCH MODAL (GRID VIEW) */}
+      {/* WHATSAPP WEB IMAGE SEARCH MODAL */}
       <Modal visible={webImageGridModal} animationType="slide" transparent={false}>
         <SafeAreaView style={{ flex: 1, backgroundColor: "#0b141a" }}>
           <StatusBar barStyle="light-content" backgroundColor="#0b141a" />
           
-          {/* WhatsApp Header */}
           <View style={{ flexDirection: "row", alignItems: "center", padding: 12, borderBottomWidth: 1, borderBottomColor: "#1f2c34" }}>
-            <TouchableOpacity onPress={() => setWebImageGridModal(false)} style={{ padding: 6 }}>
+            <TouchableOpacity focusable={false} onPress={() => { setWebImageGridModal(false); focusGunScanner(); }} style={{ padding: 6 }}>
               <Icon name="arrow-left" size={24} color="#e9edef" />
             </TouchableOpacity>
             <View style={{ flex: 1, marginHorizontal: 10, flexDirection: "row", alignItems: "center", backgroundColor: "#1f2c34", borderRadius: 20, paddingHorizontal: 12, height: 42 }}>
@@ -1492,17 +1510,16 @@ setTimeout(() => {
                 returnKeyType="search"
               />
               {webSearchQuery.length > 0 && (
-                <TouchableOpacity onPress={() => setWebSearchQuery("")}>
+                <TouchableOpacity focusable={false} onPress={() => setWebSearchQuery("")}>
                   <Icon name="close" size={18} color="#8696a0" />
                 </TouchableOpacity>
               )}
             </View>
-            <TouchableOpacity onPress={() => executeWebSearch(webSearchQuery)} style={{ padding: 6 }}>
+            <TouchableOpacity focusable={false} onPress={() => executeWebSearch(webSearchQuery)} style={{ padding: 6 }}>
               <Icon name="magnify" size={24} color="#00a884" />
             </TouchableOpacity>
           </View>
 
-          {/* 3-Column Grid Layout matching WhatsApp Pack Shots */}
           {webSearchSearching ? (
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
               <ActivityIndicator size="large" color="#00a884" />
@@ -1516,10 +1533,13 @@ setTimeout(() => {
               contentContainerStyle={{ padding: 2 }}
               renderItem={({ item }) => (
                 <TouchableOpacity
+                  focusable={false}
                   onPress={() => {
                     setPredictSelectedImage(item);
                     setPredictImages(prev => [item, ...prev]);
+                    setMissingFields(prev => prev.filter(f => f !== "Product Image"));
                     setWebImageGridModal(false);
+                    focusGunScanner();
                   }}
                   style={{ flex: 1 / 3, aspectRatio: 1, margin: 2, backgroundColor: "#ffffff", borderRadius: 4, overflow: "hidden", justifyContent: "center", alignItems: "center" }}
                 >
@@ -1552,7 +1572,6 @@ setTimeout(() => {
                 body { font-family: monospace; margin: 0; padding: 20px 15px; font-size: 14px; color: #000; font-weight: bold; background-color: #fff; }
                 .center { text-align: center; }
                 .header-row { display: flex; align-items: center; margin-bottom: 12px; justify-content: center; }
-                .logo-img { width: 50px; height: 50px; border-radius: 50%; object-order: cover; margin-right: 10px; border: 1px solid #ddd; }
                 .divider { border-top: 1px dashed #000; margin: 12px 0; }
                 .row { display: flex; justify-content: space-between; }
                 table { width: 100%; border-collapse: collapse; }
@@ -1568,7 +1587,6 @@ setTimeout(() => {
                 <div style="font-size:13px; color: #555;">STOCK PURCHASE RECEIPT</div>
                 </div>
                 </div>
-
                 <div class="divider"></div>
                 <div>Pur No: ${currentPurNo}</div>
                 <div>Date: ${currentPurDate}</div>
@@ -1596,21 +1614,20 @@ setTimeout(() => {
             />
           </View>
           <View style={styles.receiptActionRow}>
-            <TouchableOpacity style={[styles.recBtn, { backgroundColor: "#ef4444" }]} onPress={() => { setShowReceiptModal(false); setBill([]); }}>
+            <TouchableOpacity focusable={false} style={[styles.recBtn, { backgroundColor: "#ef4444" }]} onPress={() => { setShowReceiptModal(false); setBill([]); focusGunScanner(); }}>
               <Text style={styles.recBtnText}>Close</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.recBtn, { backgroundColor: "#6366f1" }]} onPress={() => triggerPurchasePrint(currentPurNo, currentPurDate, purTotal)}>
+            <TouchableOpacity focusable={false} style={[styles.recBtn, { backgroundColor: "#6366f1" }]} onPress={() => triggerPurchasePrint(currentPurNo, currentPurDate, purTotal)}>
               <Text style={styles.recBtnText}>🖨 Print Invoice</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* MODAL - MULTI-STEP PROFESSIONAL WIZARD */}
+      {/* MULTI-STEP WIZARD MODAL */}
       <Modal visible={modalVisible} transparent={true} animationType="fade">
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center" }}>
           <View style={{ backgroundColor: darkMode ? "#1e293b" : "#fff", width: "90%", borderRadius: 20, padding: 22, elevation: 10 }}>
-            {/* HEADER & STEP INDICATOR */}
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 }}>
               <View>
                 <Text style={{ fontSize: 18, fontWeight: "800", color: darkMode ? "#f8fafc" : "#0f172a" }}>
@@ -1618,22 +1635,21 @@ setTimeout(() => {
                 </Text>
                 <Text style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Step {formStep} of 3</Text>
               </View>
-              <TouchableOpacity onPress={() => { setModalVisible(false); setFormStep(1); }}>
+              <TouchableOpacity focusable={false} onPress={() => { setModalVisible(false); setFormStep(1); focusGunScanner(); }}>
                 <Icon name="close" size={22} color={darkMode ? "#94a3b8" : "#64748b"} />
               </TouchableOpacity>
             </View>
 
-            {/* STEP PROGRESS BAR */}
             <View style={{ flexDirection: "row", height: 4, backgroundColor: darkMode ? "#334155" : "#e2e8f0", borderRadius: 2, marginBottom: 20 }}>
               <View style={{ flex: formStep >= 1 ? 1 : 0, backgroundColor: "#6366f1", borderRadius: 2 }} />
               <View style={{ flex: formStep >= 2 ? 1 : 0, backgroundColor: formStep >= 2 ? "#6366f1" : "transparent", marginLeft: 4, borderRadius: 2 }} />
               <View style={{ flex: formStep >= 3 ? 1 : 0, backgroundColor: formStep >= 3 ? "#6366f1" : "transparent", marginLeft: 4, borderRadius: 2 }} />
             </View>
 
-            {/* STEP 1: IMAGE, SUPPLIER, NAME, BRAND */}
             {formStep === 1 && (
               <View>
                 <TouchableOpacity
+                  focusable={false}
                   onPress={pickImage}
                   style={[styles.imagePickerBox, { backgroundColor: darkMode ? "#0f172a" : "#f8fafc", borderColor: darkMode ? "#334155" : "#cbd5e1" }]}
                 >
@@ -1654,7 +1670,7 @@ setTimeout(() => {
                     <View style={[styles.searchDropdownContainer, { backgroundColor: darkMode ? "#0f172a" : "#ffffff", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
                       <ScrollView nestedScrollEnabled={true} style={{ maxHeight: 120 }}>
                         {filteredCategoryProducts.map(item => (
-                          <TouchableOpacity key={item.id} style={[styles.searchDropdownItem, { borderBottomColor: darkMode ? "#334155" : "#e2e8f0" }]} onPress={() => { setEditName(item.itemName); setPurchasePrice(String(item.purchasePrice || 0)); setSalesPrice(String(item.salesPrice || 0)); setEditBrand(item.brand || ""); setEditImage(item.image || ""); setSelectedCategory(item.category || ""); setShowDropdown(false); }}>
+                          <TouchableOpacity focusable={false} key={item.id} style={[styles.searchDropdownItem, { borderBottomColor: darkMode ? "#334155" : "#e2e8f0" }]} onPress={() => { setEditName(item.itemName); setPurchasePrice(String(item.purchasePrice || 0)); setSalesPrice(String(item.salesPrice || 0)); setEditBrand(item.brand || ""); setEditImage(item.image || ""); setSelectedCategory(item.category || ""); setShowDropdown(false); }}>
                             <Text style={{ fontSize: 14, fontWeight: "600", color: darkMode ? "#f8fafc" : "#000" }}>{item.itemName}</Text>
                           </TouchableOpacity>
                         ))}
@@ -1667,7 +1683,6 @@ setTimeout(() => {
               </View>
             )}
 
-            {/* STEP 2: PRICING, QTY & UNITS */}
             {formStep === 2 && (
               <View>
                 <TextInput placeholder="Purchase Price (₹) *" placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"} keyboardType="numeric" value={purchasePrice} onChangeText={setPurchasePrice} style={[styles.input, { backgroundColor: darkMode ? "#0f172a" : "#ffffff", color: darkMode ? "#f8fafc" : "#111827", borderColor: darkMode ? "#334155" : "#cbd5e1" }]} />
@@ -1678,6 +1693,7 @@ setTimeout(() => {
                 <View style={{ flexDirection: "row", marginTop: 8 }}>
                   {["Qty", "Kg", "Gram"].map(unit => (
                     <TouchableOpacity
+                      focusable={false}
                       key={unit}
                       onPress={() => setUnitType(unit)}
                       style={[styles.unitTab, unitType === unit ? { backgroundColor: "#16a34a" } : { backgroundColor: darkMode ? "#0f172a" : "#e5e7eb" }]}
@@ -1689,7 +1705,6 @@ setTimeout(() => {
               </View>
             )}
 
-            {/* STEP 3: CATEGORY & TAX */}
             {formStep === 3 && (
               <View>
                 <Text style={{ marginBottom: 6, fontWeight: "600", color: darkMode ? "#f8fafc" : '#000', fontSize: 13 }}>Tax Percentage</Text>
@@ -1725,29 +1740,30 @@ setTimeout(() => {
                   />
                 </View>
 
-                <TouchableOpacity onPress={() => { setNewCategoryModal(true); }} style={{ marginTop: 12, alignSelf: 'flex-start' }}>
+                <TouchableOpacity focusable={false} onPress={() => { setNewCategoryModal(true); }} style={{ marginTop: 12, alignSelf: 'flex-start' }}>
                   <Text style={{ color: "#6366f1", fontWeight: "600", fontSize: 13 }}>+ Add New Category</Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* FOOTER ACTION BUTTONS */}
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 25 }}>
               {formStep > 1 ? (
                 <TouchableOpacity
+                  focusable={false}
                   onPress={() => setFormStep(prev => prev - 1)}
                   style={{ paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, borderWidth: 1, borderColor: darkMode ? "#334155" : "#cbd5e1" }}
                 >
                   <Text style={{ color: darkMode ? "#f8fafc" : "#475569", fontWeight: "bold" }}>Back</Text>
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity onPress={() => { setModalVisible(false); setFormStep(1); }} style={{ padding: 12 }}>
+                <TouchableOpacity focusable={false} onPress={() => { setModalVisible(false); setFormStep(1); focusGunScanner(); }}>
                   <Text style={{ color: "#ef4444", fontWeight: "bold" }}>Cancel</Text>
                 </TouchableOpacity>
               )}
 
               {formStep < 3 ? (
                 <TouchableOpacity
+                  focusable={false}
                   onPress={() => {
                     if (formStep === 1 && !editName.trim()) {
                       Alert.alert("Required", "Please enter a product name.");
@@ -1761,9 +1777,8 @@ setTimeout(() => {
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
-                  onPress={() => {
-                    handleAddOrUpdateProduct();
-                  }}
+                  focusable={false}
+                  onPress={handleAddOrUpdateProduct}
                   style={{ backgroundColor: "#16a34a", paddingVertical: 12, paddingHorizontal: 24, borderRadius: 10 }}
                 >
                   <Text style={{ color: "#fff", fontWeight: "bold" }}>✓ Save Product</Text>
@@ -1795,6 +1810,7 @@ setTimeout(() => {
             <Text style={{ fontSize: 18, fontWeight: "bold", marginBottom: 10, color: darkMode ? "#f8fafc" : '#000' }}>Manage Categories ({currentMode.toUpperCase()})</Text>
             <TextInput placeholder="New Category Name" placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"} value={categoryName} onChangeText={setCategoryName} style={[styles.input, { backgroundColor: darkMode ? "#0f172a" : "#ffffff", color: darkMode ? "#f8fafc" : "#111827", borderColor: darkMode ? "#334155" : "#cbd5e1" }]} />
             <TouchableOpacity
+              focusable={false}
               onPress={async () => {
                 if (!categoryName.trim() || !user) return;
                 await addDoc(collection(db, "users", user.uid, categoriesCollection), { name: categoryName.trim() });
@@ -1807,13 +1823,13 @@ setTimeout(() => {
             <Text style={{ fontSize: 12, color: "#64748b", marginTop: 15, marginBottom: 5, fontStyle: "italic" }}>* Long press on a category to delete it</Text>
             <ScrollView style={{ minHeight: 100, maxHeight: 200, borderWidth: 1, borderColor: darkMode ? "#334155" : "#cbd5e1", borderRadius: 10, padding: 5 }}>
               {categories.map((cat) => (
-                <TouchableOpacity key={cat.id} onLongPress={() => handleDeleteCategory(cat.id, cat.name)} delayLongPress={600} style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: darkMode ? "#334155" : "#e2e8f0", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", marginVertical: 2, borderRadius: 5 }}>
+                <TouchableOpacity focusable={false} key={cat.id} onLongPress={() => handleDeleteCategory(cat.id, cat.name)} delayLongPress={600} style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: darkMode ? "#334155" : "#e2e8f0", backgroundColor: darkMode ? "#0f172a" : "#f8fafc", marginVertical: 2, borderRadius: 5 }}>
                   <Text style={{ color: darkMode ? "#f8fafc" : "#334155", fontWeight: "500" }}>{cat.name}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
             <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 20 }}>
-              <TouchableOpacity onPress={() => { setCategoryName(""); setNewCategoryModal(false); }} style={{ padding: 10 }}>
+              <TouchableOpacity focusable={false} onPress={() => { setCategoryName(""); setNewCategoryModal(false); focusGunScanner(); }} style={{ padding: 10 }}>
                 <Text style={{ color: "#6366f1", fontSize: 16, fontWeight: "bold" }}>Done</Text>
               </TouchableOpacity>
             </View>
@@ -1824,30 +1840,129 @@ setTimeout(() => {
   );
 }
 
+const stepperStyles = StyleSheet.create({
+  container: {
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  stepsRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
+  stepWrapper: {
+    flex: 1,
+    alignItems: "center",
+  },
+  nodeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+    justifyContent: "center",
+  },
+  circleNode: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 2,
+  },
+  circleActive: {
+    backgroundColor: "#22c55e",
+  },
+  circleInactive: {
+    backgroundColor: "#ffffff",
+    borderWidth: 2,
+    borderColor: "#cbd5e1",
+  },
+  stepNumText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  lineTrack: {
+    position: "absolute",
+    left: "50%",
+    right: "-50%",
+    top: 13,
+    height: 3,
+    backgroundColor: "#e2e8f0",
+    zIndex: 1,
+  },
+  lineFill: {
+    height: "100%",
+    backgroundColor: "#22c55e",
+  },
+  stepLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#94a3b8",
+    marginTop: 6,
+    textAlign: "center",
+  },
+  stepLabelActive: {
+    color: "#22c55e",
+    fontWeight: "700",
+  },
+});
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  gunListenerWrapper: {
+    position: 'absolute',
+    top: -200,
+    left: -200,
+    width: 1,
+    height: 1,
+    opacity: 0,
+    overflow: 'hidden',
+  },
+  gunHiddenInput: {
+    width: 1,
+    height: 1,
+    opacity: 0,
+    padding: 0,
+    margin: 0,
+  },
   topWhiteHeader: { height: 60, width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: 1, elevation: 2, marginTop: Platform.OS === "android" ? StatusBar.currentHeight || 24 : 0 },
   shopBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   shopNameText: { fontSize: 16, fontWeight: '800', marginLeft: 6 },
   headerIconBtn: { padding: 8, marginLeft: 6, borderRadius: 20 },
+
+  mainLayout: { flex: 1, flexDirection: 'column' },
+  landscapeMainLayout: { flexDirection: 'row', padding: 12, gap: 14 },
+  
+  leftSection: { width: '100%' },
+  landscapeLeftSection: { flex: 0.52, height: '100%', justifyContent: 'flex-start' },
+
   cameraOuterWrapper: { height: 260, width: "100%", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
-  cameraFrameContainer: { flex: 1, overflow: "hidden", backgroundColor: '#000', borderRadius: 24, elevation: 4 },
-  cameraControlRow: { position: 'absolute', top: 15, right: 15, zIndex: 10, flexDirection: 'row' },
-  actionCircleBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', marginLeft: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', paddingTop: 10 },
-  scanRow: { flexDirection: "row", alignItems: "center", justifyContent: 'center', padding: 40 },
-  salesScanBox: { width: width * 0.75, height: 160, justifyContent: "center", alignItems: "center", backgroundColor: 'none', borderRadius: 16 },
-  corner: { position: "absolute", width: 24, height: 24, borderColor: "#22c55e" },
-  topLeft: { top: 0, left: 0, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: 10 },
-  topRight: { top: 0, right: 0, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: 10 },
-  bottomLeft: { bottom: 0, left: 0, borderBottomWidth: 4, borderLeftWidth: 4, borderBottomLeftRadius: 10 },
-  bottomRight: { bottom: 0, right: 0, borderBottomWidth: 4, borderRightWidth: 4, borderBottomRightRadius: 10 },
-  scanText: { color: "#22c55e", marginTop: 10, fontSize: 15, fontWeight: "700", textAlign: 'center' },
+  landscapeCameraOuterWrapper: { height: 175, flex: 0, paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0 },
+  cameraFrameContainer: { flex: 1, overflow: "hidden", backgroundColor: '#000', borderRadius: 20, elevation: 4 },
+  cameraControlRow: { position: 'absolute', top: 10, right: 10, zIndex: 10, flexDirection: 'row' },
+  actionCircleBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', marginLeft: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
+  scanRow: { flexDirection: "row", alignItems: "center", justifyContent: 'center', padding: 0 },
+  salesScanBox: { width: '80%', height: 140, justifyContent: "center", alignItems: "center", backgroundColor: 'transparent', borderRadius: 16,marginTop: 45, },
+  tabletSalesScanBox: { width: "90%", height: 105 },
+  corner: { position: "absolute", width: 20, height: 20,borderColor: "#22c55e" },
+  topLeft: { top: 0, left: 0, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: 8 },
+  topRight: { top: 0, right: 0, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: 8 },
+  bottomLeft: { bottom: 0, left: 0, borderBottomWidth: 4, borderLeftWidth: 4, borderBottomLeftRadius: 8 },
+  bottomRight: { bottom: 0, right: 0, borderBottomWidth: 4, borderRightWidth: 4, borderBottomRightRadius: 8 },
+  scanText: { color: "#22c55e", marginTop: 4, fontSize: 13, fontWeight: "700", textAlign: 'center' },
+
+  searchRowContainer: { flexDirection: "row", alignItems: "center", paddingTop: 14, paddingBottom: 6, borderRadius: 12 },
 
   bottomWhiteContainer: { flex: 1, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 16, marginTop: 4, elevation: 12 },
-  title: { fontSize: 18, marginBottom: 8, fontWeight: "700" },
-  itemCard: { borderRadius: 14, padding: 12, marginBottom: 8, flexDirection: "row", alignItems: "center", borderWidth: 1 },
-  billSummaryBox: { marginTop: 5, padding: 12, borderRadius: 18 },
+  landscapeRightSection: { flex: 1.48, height: '100%', borderRadius: 22, marginTop: 0, elevation: 4, padding: 14 },
+  
+  title: { fontSize: 17, marginBottom: 8, fontWeight: "700" },
+  itemCard: { borderRadius: 14, padding: 10, marginBottom: 6, flexDirection: "row", alignItems: "center", borderWidth: 1 },
+  billSummaryBox: { marginTop: 6, padding: 10, borderRadius: 14 },
 
   qtyBtn: { backgroundColor: '#6366f1', width: 26, height: 26, borderRadius: 6, justifyContent: 'center', alignItems: 'center' },
 

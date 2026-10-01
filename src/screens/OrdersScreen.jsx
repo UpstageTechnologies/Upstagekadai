@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { 
   Linking, 
   View, 
@@ -10,7 +10,8 @@ import {
   Alert, 
   TextInput,
   Modal,
-  StatusBar
+  StatusBar,
+  ScrollView
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
@@ -21,6 +22,8 @@ import { getSession } from "../utils/session";
 import { useRoute, useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTheme } from "../theme/ThemeContext";
+
+const TABS = ["All", "New", "Hold", "Completed", "Rejected"];
 
 export default function OrdersScreen() {
   const route = useRoute();
@@ -38,89 +41,133 @@ export default function OrdersScreen() {
   const [pendingMessage, setPendingMessage] = useState("");
   const [currentAppMode, setCurrentAppMode] = useState("local");
 
+  // Filter & Search states
+  const [activeTab, setActiveTab] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const handleBackPress = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate("Home"); 
+    }
+  };
+
   const getSubCol = (mode) => (mode === "global" ? "global_orders" : "local_orders");
 
   useEffect(() => {
-    let unsubscribe = null;
+    let unsubs = [];
     let isMounted = true;
 
     const loadOrders = async () => {
-      const session = await getSession();
+      try {
+        const session = await getSession();
 
-      if (!session?.uid) {
-        if (isMounted) setLoading(false);
-        return;
-      }
+        if (!session?.uid) {
+          if (isMounted) setLoading(false);
+          return;
+        }
 
-      if (!isMounted) return;
-      setUid(session.uid);
+        if (!isMounted) return;
+        setUid(session.uid);
 
-      let activeMode = route.params?.appMode;
-      if (!activeMode) {
-        const savedMode = await AsyncStorage.getItem("app_mode");
-        activeMode = savedMode === "global" ? "global" : "local";
-      }
+        let activeMode = route.params?.appMode;
+        if (!activeMode) {
+          const savedMode = await AsyncStorage.getItem("app_mode");
+          activeMode = savedMode === "global" ? "global" : "local";
+        }
 
-      if (!isMounted) return;
-      setCurrentAppMode(activeMode);
-      const subCollectionName = getSubCol(activeMode);
+        if (!isMounted) return;
+        setCurrentAppMode(activeMode);
+        const subCollectionName = getSubCol(activeMode);
 
-      unsubscribe = onSnapshot(
-        collection(db, "users", session.uid, subCollectionName),
-        (snap) => {
+        let subColOrders = [];
+        let legacyOrders = [];
+
+        const mergeAndSetOrders = () => {
           if (!isMounted) return;
 
-          let arr = snap.docs.map(d => ({
-            id: d.id,
-            ...d.data(),
-          }));
+          // Merge both arrays without duplicate order IDs
+          const orderMap = new Map();
 
-          if (arr.length === 0) {
-            unsubscribe = onSnapshot(
-              collection(db, "users", session.uid, "orders"),
-              (legacySnap) => {
-                if (!isMounted) return;
-                const legacyArr = legacySnap.docs.map(d => ({
-                  id: d.id,
-                  ...d.data(),
-                }));
+          // Add legacy orders first (filtered by mode)
+          legacyOrders.forEach(item => {
+            const scope = (item.deliveryScope || "").toLowerCase();
+            const isMatch = activeMode === "global"
+              ? (scope === "global" || item.isGlobalMode === true)
+              : (scope === "local" || !item.deliveryScope || item.isGlobalMode === false);
 
-                const filteredLegacy = legacyArr.filter(item => {
-                  const scope = (item.deliveryScope || "").toLowerCase();
-                  if (activeMode === "global") {
-                    return scope === "global" || item.isGlobalMode === true;
-                  } else {
-                    return scope === "local" || !item.deliveryScope || item.isGlobalMode === false;
-                  }
-                });
+            if (isMatch) {
+              orderMap.set(item.id, item);
+            }
+          });
 
-                filteredLegacy.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-                setOrders(filteredLegacy);
-                setLoading(false);
-              }
-            );
-            return;
-          }
+          // Sub-collection orders take priority/override
+          subColOrders.forEach(item => {
+            orderMap.set(item.id, item);
+          });
 
-          arr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          setOrders(arr);
+          const combined = Array.from(orderMap.values()).filter(item => {
+          const name = (item.customerName || "").toLowerCase();
+          return !name.includes("walk-in") && !item.isWalkIn;
+        });
+
+          // Sort descending by date
+          combined.sort((a, b) => {
+            const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+            const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+            return dateB - dateA;
+          });
+
+          setOrders(combined);
           setLoading(false);
-        },
-        (error) => {
-          console.log("❌ Orders snapshot error:", error);
-          if (isMounted) setLoading(false);
-        }
-      );
+        };
+
+        // 1. Listen to sub-collection (local_orders / global_orders)
+        const unsubSubCol = onSnapshot(
+          collection(db, "users", session.uid, subCollectionName),
+          (snap) => {
+            subColOrders = snap.docs.map(d => ({
+              id: d.id,
+              ...d.data(),
+            }));
+            mergeAndSetOrders();
+          },
+          (err) => {
+            console.log("Sub-collection snapshot error:", err);
+            if (isMounted) setLoading(false);
+          }
+        );
+        unsubs.push(unsubSubCol);
+
+        // 2. Listen to legacy collection ("orders") concurrently
+        const unsubLegacy = onSnapshot(
+          collection(db, "users", session.uid, "orders"),
+          (legacySnap) => {
+            legacyOrders = legacySnap.docs.map(d => ({
+              id: d.id,
+              ...d.data(),
+            }));
+            mergeAndSetOrders();
+          },
+          (err) => {
+            console.log("Legacy snapshot error:", err);
+            if (isMounted) setLoading(false);
+          }
+        );
+        unsubs.push(unsubLegacy);
+
+      } catch (e) {
+        console.log("loadOrders Error:", e);
+        if (isMounted) setLoading(false);
+      }
     };
 
     loadOrders();
 
     return () => {
       isMounted = false;
-      if (unsubscribe) {
-        unsubscribe();
-        unsubscribe = null;
-      }
+      unsubs.forEach(unsub => unsub && unsub());
     };
   }, [route.params?.appMode]);
 
@@ -246,16 +293,77 @@ export default function OrdersScreen() {
     }
   };
 
-  const savePending = async () => {
+  const resumeOrder = async (order) => {
+    const restoredStatus = order.lastStatus || "Accepted";
     try {
       const subCol = getSubCol(currentAppMode);
       try {
-        await updateDoc(doc(db, "users", uid, subCol, selectedOrder.id), { status: "Pending", lastStatus: selectedOrder.status === "Pending" ? selectedOrder.lastStatus : selectedOrder.status, pendingUntil: new Date(selectedDate.getTime() + 60 * 60 * 1000).toISOString(), pendingMessage: pendingMessage });
+        await updateDoc(doc(db, "users", uid, subCol, order.id), { 
+          status: restoredStatus,
+          pendingMessage: "",
+          pendingUntil: null
+        });
       } catch {
-        await updateDoc(doc(db, "users", uid, "orders", selectedOrder.id), { status: "Pending", lastStatus: selectedOrder.status === "Pending" ? selectedOrder.lastStatus : selectedOrder.status, pendingUntil: new Date(selectedDate.getTime() + 60 * 60 * 1000).toISOString(), pendingMessage: pendingMessage });
+        await updateDoc(doc(db, "users", uid, "orders", order.id), { 
+          status: restoredStatus,
+          pendingMessage: "",
+          pendingUntil: null
+        });
+      }
+
+      if (order.customerUid) {
+        const customerRef = doc(db, "customers", order.customerUid, "orders", order.id);
+        const snap = await getDoc(customerRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          const updatedShops = (data.orderedShops || []).map(shop => {
+            if (shop.shopId === uid) { 
+              return { ...shop, status: restoredStatus, pendingMessage: "", pendingUntil: null }; 
+            }
+            return shop;
+          });
+          await updateDoc(customerRef, { 
+            status: restoredStatus, 
+            orderedShops: updatedShops,
+            pendingMessage: "",
+            pendingUntil: null
+          });
+        }
+      }
+      Alert.alert("Success", `Order resumed to "${restoredStatus}"`);
+    } catch (e) {
+      console.log("Resume Order Error: ", e);
+      Alert.alert("Error", "Failed to resume order");
+    }
+  };
+
+  const savePending = async () => {
+    try {
+      const subCol = getSubCol(currentAppMode);
+      const originalStatus = selectedOrder.status === "Pending" ? (selectedOrder.lastStatus || "Accepted") : (selectedOrder.status || "Accepted");
+      
+      try {
+        await updateDoc(doc(db, "users", uid, subCol, selectedOrder.id), { 
+          status: "Pending", 
+          lastStatus: originalStatus, 
+          pendingUntil: new Date(selectedDate.getTime() + 60 * 60 * 1000).toISOString(), 
+          pendingMessage: pendingMessage 
+        });
+      } catch {
+        await updateDoc(doc(db, "users", uid, "orders", selectedOrder.id), { 
+          status: "Pending", 
+          lastStatus: originalStatus, 
+          pendingUntil: new Date(selectedDate.getTime() + 60 * 60 * 1000).toISOString(), 
+          pendingMessage: pendingMessage 
+        });
       }
       if (selectedOrder.customerUid) {
-        await updateDoc(doc(db, "customers", selectedOrder.customerUid, "orders", selectedOrder.id), { status: "Pending", lastStatus: selectedOrder.status === "Pending" ? selectedOrder.lastStatus : selectedOrder.status, pendingUntil: selectedDate.toISOString(), pendingMessage: pendingMessage });
+        await updateDoc(doc(db, "customers", selectedOrder.customerUid, "orders", selectedOrder.id), { 
+          status: "Pending", 
+          lastStatus: originalStatus, 
+          pendingUntil: selectedDate.toISOString(), 
+          pendingMessage: pendingMessage 
+        });
       }
       setPendingModal(false);
       setPendingMessage("");
@@ -296,7 +404,7 @@ export default function OrdersScreen() {
       case "Pending Verification": return 20;
       case "Accepted": return 40;
       case "Packed": return 60;
-      case "Pending": return 60;
+      case "Pending": return 50;
       case "Out For Delivery": return 85;
       case "Delivered": return 100;
       default: return 0;
@@ -323,7 +431,56 @@ export default function OrdersScreen() {
     }
   };
 
+// Filter & Search Logic
+  const filteredOrders = useMemo(() => {
+    return orders.filter(item => {
+      // 1. Walk-in Customer orders-ஐ filter செய்து நீக்குதல்
+      const custName = (item.customerName || "").toLowerCase().trim();
+      const orderType = (item.orderType || item.type || "").toLowerCase().trim();
+      
+      if (
+        custName.includes("walk-in") || 
+        custName === "walk in customer" || 
+        orderType.includes("walk-in") || 
+        item.isWalkIn === true
+      ) {
+        return false;
+      }
+
+      const currentStatus = (item.status || "Pending Verification").trim();
+
+      // Tab Filtering
+      if (activeTab === "New") {
+        const isNew = ["Pending Verification", "Accepted", "Packed", "Out For Delivery"].some(
+          s => s.toLowerCase() === currentStatus.toLowerCase()
+        );
+        if (!isNew) return false;
+      } else if (activeTab === "Hold") {
+        if (currentStatus.toLowerCase() !== "pending") return false;
+      } else if (activeTab === "Completed") {
+        if (currentStatus.toLowerCase() !== "delivered") return false;
+      } else if (activeTab === "Rejected") {
+        if (currentStatus.toLowerCase() !== "rejected") return false;
+      }
+
+      // Search Filtering
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const idMatch = (item.orderId || item.id || "").toLowerCase().includes(q);
+        const nameMatch = (item.customerName || "").toLowerCase().includes(q);
+        const phoneMatch = (item.customerPhone || "").includes(q);
+        const itemMatch = (item.items || []).some(prod => 
+          (prod.itemName || prod.name || "").toLowerCase().includes(q)
+        );
+        return idMatch || nameMatch || phoneMatch || itemMatch;
+      }
+
+      return true;
+    });
+  }, [orders, activeTab, searchQuery]);
+
   const renderItem = ({ item }) => {
+    const isPending = item.status === "Pending";
     const next = nextStatus(item.status, item.lastStatus);
     const activeTimeline = (current, targetArray) => targetArray.includes(current);
 
@@ -340,16 +497,25 @@ export default function OrdersScreen() {
         <View style={styles.topRow}>
           <Text style={[styles.orderId, { color: theme.text }]}>🆔 {item.orderId || item.id}</Text>
           <View style={[styles.statusBadge, getBadgeStyle(item.status)]}>
-            <Text style={[styles.statusText, getBadgeTextStyle(item.status)]}>{item.status}</Text>
+            <Text style={[styles.statusText, getBadgeTextStyle(item.status)]}>{item.status || "Pending Verification"}</Text>
           </View>
         </View>
 
         <View style={[styles.divider, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]} />
 
         <View style={styles.infoSection}>
-          <View style={styles.infoRow}><Icon name="account" size={18} color={darkMode ? "#94a3b8" : "#64748b"} /><Text style={[styles.name, { color: theme.text }]}>{item.customerName || "Customer"}</Text></View>
-          <View style={styles.infoRow}><Icon name="phone" size={18} color={darkMode ? "#94a3b8" : "#64748b"} /><Text style={[styles.phone, { color: darkMode ? "#cbd5e1" : "#475569" }]}>{item.customerPhone || "N/A"}</Text></View>
-          <View style={styles.infoRow}><Icon name="map-marker" size={18} color="#ef4444" /><Text style={[styles.address, { color: darkMode ? "#94a3b8" : "#64748b" }]}>{item.deliveryAddress || "Address not provided"}</Text></View>
+          <View style={styles.infoRow}>
+            <Icon name="account" size={18} color={darkMode ? "#94a3b8" : "#64748b"} />
+            <Text style={[styles.name, { color: theme.text }]}>{item.customerName || "Online Customer"}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Icon name="phone" size={18} color={darkMode ? "#94a3b8" : "#64748b"} />
+            <Text style={[styles.phone, { color: darkMode ? "#cbd5e1" : "#475569" }]}>{item.customerPhone || "N/A"}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Icon name="map-marker" size={18} color="#ef4444" />
+            <Text style={[styles.address, { color: darkMode ? "#94a3b8" : "#64748b" }]}>{item.deliveryAddress || "Address not provided"}</Text>
+          </View>
         </View>
 
         <View style={styles.actionRow}>
@@ -400,7 +566,7 @@ export default function OrdersScreen() {
           </View>
         </View>
 
-        {item.status === "Pending" && (
+        {isPending && (
           <View style={[styles.pendingAlertBox, { backgroundColor: darkMode ? "#431407" : "#fff7ed", borderColor: darkMode ? "#7c2d12" : "#ffedd5" }]}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ color: darkMode ? "#fb923c" : "#c2410c", fontWeight: "bold", fontSize: 14 }}>⏸ Order Postponed (Pending)</Text>
@@ -413,7 +579,7 @@ export default function OrdersScreen() {
                 <Icon name="pencil-box-outline" size={22} color="#f59e0b" />
               </TouchableOpacity>
             </View>
-            <Text style={[styles.pendingAlertReason, { color: darkMode ? "#fdba74" : "#7c2d12" }]}>Reason: {item.pendingMessage}</Text>
+            <Text style={[styles.pendingAlertReason, { color: darkMode ? "#fdba74" : "#7c2d12" }]}>Reason: {item.pendingMessage || "N/A"}</Text>
           </View>
         )}
 
@@ -431,19 +597,40 @@ export default function OrdersScreen() {
           </View>
         )}
 
+        {/* Action Buttons */}
         <View style={{ flexDirection: "row", gap: 8, marginTop: 15 }}>
-          {next && (
-            <TouchableOpacity style={[styles.mainActionBtn, { backgroundColor: "#6366f1" }]} onPress={() => updateStatus(item.id, next, item.customerUid)}>
-              <Text style={styles.btnText}>Mark as {next}</Text>
+          {isPending ? (
+            <TouchableOpacity 
+              style={[styles.mainActionBtn, { backgroundColor: "#10b981" }]} 
+              onPress={() => resumeOrder(item)}
+            >
+              <Text style={styles.btnText}>▶ Resume Order</Text>
+            </TouchableOpacity>
+          ) : (
+            next && (
+              <TouchableOpacity 
+                style={[styles.mainActionBtn, { backgroundColor: "#6366f1" }]} 
+                onPress={() => updateStatus(item.id, next, item.customerUid)}
+              >
+                <Text style={styles.btnText}>Mark as {next}</Text>
+              </TouchableOpacity>
+            )
+          )}
+
+          {!["Delivered", "Rejected"].includes(item.status) && (
+            <TouchableOpacity 
+              style={[styles.secondaryActionBtn, { backgroundColor: "#f59e0b" }]} 
+              onPress={() => { setSelectedOrder(item); setPendingModal(true); }}
+            >
+              <Text style={styles.btnText}>{isPending ? "Edit Hold" : "Hold"}</Text>
             </TouchableOpacity>
           )}
+
           {!["Delivered", "Rejected"].includes(item.status) && (
-            <TouchableOpacity style={[styles.secondaryActionBtn, { backgroundColor: "#f59e0b" }]} onPress={() => { setSelectedOrder(item); setPendingModal(true); }}>
-              <Text style={styles.btnText}>Hold</Text>
-            </TouchableOpacity>
-          )}
-          {!["Delivered", "Rejected"].includes(item.status) && (
-            <TouchableOpacity style={[styles.secondaryActionBtn, { backgroundColor: "#ef4444" }]} onPress={() => rejectOrder(item.id, item.customerUid)}>
+            <TouchableOpacity 
+              style={[styles.secondaryActionBtn, { backgroundColor: "#ef4444" }]} 
+              onPress={() => rejectOrder(item.id, item.customerUid)}
+            >
               <Text style={styles.btnText}>Reject</Text>
             </TouchableOpacity>
           )}
@@ -464,10 +651,11 @@ export default function OrdersScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <StatusBar backgroundColor={theme.background} barStyle={darkMode ? "light-content" : "dark-content"} />
       
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity 
           style={[styles.backButton, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]} 
-          onPress={() => navigation.goBack()}
+          onPress={handleBackPress}
         >
           <Icon name="arrow-left" size={22} color={theme.text} />
         </TouchableOpacity>
@@ -477,8 +665,60 @@ export default function OrdersScreen() {
         </Text>
       </View>
 
+      {/* Search Bar */}
+      <View style={[styles.searchContainer, { backgroundColor: darkMode ? "#1e293b" : "#fff", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
+        <Icon name="magnify" size={22} color={darkMode ? "#94a3b8" : "#64748b"} />
+        <TextInput
+          style={[styles.searchInput, { color: theme.text }]}
+          placeholder="Search by ID, name, phone, item..."
+          placeholderTextColor={darkMode ? "#64748b" : "#94a3b8"}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery("")}>
+            <Icon name="close-circle" size={18} color="#94a3b8" />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Tabs */}
+      <View style={{ marginBottom: 12 }}>
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsContainer}
+        >
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab;
+            return (
+              <TouchableOpacity
+                key={tab}
+                onPress={() => setActiveTab(tab)}
+                style={[
+                  styles.tabPill,
+                  isActive
+                    ? styles.activeTabPill
+                    : [styles.inactiveTabPill, { backgroundColor: darkMode ? "#1e293b" : "#fff", borderColor: darkMode ? "#334155" : "#e2e8f0" }]
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.tabPillText,
+                    isActive ? styles.activeTabText : [styles.inactiveTabText, { color: darkMode ? "#cbd5e1" : "#1e293b" }]
+                  ]}
+                >
+                  {tab}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* List */}
       <FlatList
-        data={orders}
+        data={filteredOrders}
         keyExtractor={item => item.id}
         renderItem={renderItem}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }}
@@ -486,11 +726,12 @@ export default function OrdersScreen() {
         ListEmptyComponent={
           <View style={styles.emptyBox}>
             <Icon name="package-variant-closed" size={60} color={darkMode ? "#475569" : "#cbd5e1"} />
-            <Text style={styles.emptyText}>No {currentAppMode.toUpperCase()} Orders Found</Text>
+            <Text style={styles.emptyText}>No Orders Found</Text>
           </View>
         }
       />
 
+      {/* Pending Modal */}
       <Modal visible={pendingModal} transparent animationType="fade">
         <View style={styles.modalBg}>
           <View style={[styles.newModalBox, { backgroundColor: theme.card }]}>
@@ -534,6 +775,58 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", marginHorizontal: 16, marginVertical: 12 },
   backButton: { padding: 8, borderRadius: 12, marginRight: 10 },
   title: { fontSize: 18, fontWeight: "800", marginLeft: 8, flex: 1 },
+
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 16,
+    paddingHorizontal: 14,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    marginBottom: 12,
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "500",
+  },
+
+  tabsContainer: {
+    paddingHorizontal: 16,
+    gap: 10,
+    alignItems: "center",
+  },
+  tabPill: {
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+    borderRadius: 30,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  activeTabPill: {
+    backgroundColor: "#ff701e",
+    elevation: 3,
+    shadowColor: "#ff701e",
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  inactiveTabPill: {
+    borderWidth: 1.5,
+  },
+  tabPillText: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  activeTabText: {
+    color: "#ffffff",
+  },
+  inactiveTabText: {
+    fontWeight: "700",
+  },
+
   card: { borderRadius: 20, padding: 16, marginBottom: 16, elevation: 3, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 10 },
   topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   orderId: { fontWeight: "800", fontSize: 15 },

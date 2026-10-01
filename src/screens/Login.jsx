@@ -1,5 +1,4 @@
 import React, { useState, useRef } from "react";
-
 import {
   View,
   Text,
@@ -7,13 +6,16 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Image,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
   StatusBar,
+  TouchableWithoutFeedback,
+  Keyboard,
 } from "react-native";
+import Icon from "react-native-vector-icons/MaterialCommunityIcons";
+import FastImage from "react-native-fast-image";
 
 import { saveSession } from "../utils/session";
 import { auth, db } from "../utils/firebaseConfig";
@@ -24,12 +26,12 @@ import {
 } from "firebase/auth";
 
 import { doc, getDoc } from "firebase/firestore";
-
 import { saveSellerFCMToken } from "../utils/fcmToken";
 
 export default function LoginScreen({ navigation }) {
   const passwordRef = useRef(null);
 
+  const [activeRole, setActiveRole] = useState("master"); // 'master' | 'employee'
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -37,7 +39,15 @@ export default function LoginScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  const handleRoleChange = (role) => {
+    setActiveRole(role);
+    if (role === "employee") {
+      navigation.navigate("StaffLogin");
+    }
+  };
+
   const handleLogin = async () => {
+    Keyboard.dismiss();
     setError("");
     setLoading(true);
 
@@ -55,13 +65,10 @@ export default function LoginScreen({ navigation }) {
       console.log("👤 SELLER UID:", uid);
 
       // 2. Check seller document
-      const snap = await getDoc(
-        doc(db, "users", uid)
-      );
+      const snap = await getDoc(doc(db, "users", uid));
 
       if (!snap.exists()) {
         await auth.signOut();
-
         setError("User not registered ❌");
         setLoading(false);
         return;
@@ -71,32 +78,25 @@ export default function LoginScreen({ navigation }) {
       const now = Date.now();
 
       try {
-  console.log("🔔 Starting seller FCM setup...");
+        console.log("🔔 Starting seller FCM setup...");
+        await saveSellerFCMToken(uid);
+        console.log("✅ Seller FCM setup completed");
+      } catch (fcmError) {
+        console.log("⚠️ FCM setup failed:", fcmError);
+      }
 
-  await saveSellerFCMToken(uid);
-        
-  console.log("✅ Seller FCM setup completed");
-} catch (fcmError) {
-  console.log(
-    "⚠️ FCM setup failed:",
-    fcmError
-  );
-}
-
-      // 4. Existing subscription logic
+      // 3. Existing subscription logic
       if (userData.subscriptionExpiry > now) {
         await saveSession({
           route: "Dashboard",
           uid: uid,
         });
-
         navigation.replace("Dashboard");
       } else {
         await saveSession({
           route: "Subscription",
           uid: uid,
         });
-
         navigation.replace("Subscription");
       }
     } catch (e) {
@@ -117,6 +117,7 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleForgotPassword = async () => {
+    Keyboard.dismiss();
     setError("");
     setMessage("");
 
@@ -126,11 +127,7 @@ export default function LoginScreen({ navigation }) {
     }
 
     try {
-      await sendPasswordResetEmail(
-        auth,
-        email.trim()
-      );
-
+      await sendPasswordResetEmail(auth, email.trim());
       setMessage("Reset link sent 📩");
     } catch (e) {
       setError("Failed ❌");
@@ -138,177 +135,234 @@ export default function LoginScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView
-      style={{
-        flex: 1,
-        backgroundColor: "#eef2ff",
-        paddingTop:
-          Platform.OS === "android"
-            ? StatusBar.currentHeight
-            : 0,
-      }}
-    >
+    <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={
-          Platform.OS === "ios"
-            ? "padding"
-            : undefined
-        }
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <ScrollView
-          contentContainerStyle={{
-            flexGrow: 1,
-            justifyContent: "center",
-            paddingVertical: 40,
-            paddingHorizontal: 25,
-          }}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.card}>
-            <Image
-              source={require("../assets/shopping1.jpg")}
-              style={styles.topImage}
-              resizeMode="contain"
-            />
-
-            <Text style={styles.title}>
-              Sign In
-            </Text>
-
-            <Text style={styles.subtitle}>
-              Enter valid email & password to continue
-            </Text>
-
-            <TextInput
-              placeholder="Email"
-              placeholderTextColor="#94a3b8"
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              returnKeyType="next"
-              onSubmitEditing={() =>
-                passwordRef.current?.focus()
-              }
-            />
-
-            <TextInput
-              ref={passwordRef}
-              placeholder="Password"
-              placeholderTextColor="#94a3b8"
-              style={styles.input}
-              secureTextEntry={!showPassword}
-              value={password}
-              onChangeText={setPassword}
-              returnKeyType="done"
-              onSubmitEditing={handleLogin}
-            />
-
-            <TouchableOpacity
-              onPress={() =>
-                setShowPassword(!showPassword)
-              }
-            >
-              <Text style={styles.showText}>
-                {showPassword
-                  ? "Hide Password"
-                  : "Show Password"}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleLogin}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.btnText}>
-                  Login
-                </Text>
-              )}
-            </TouchableOpacity>
-
-            {error ? (
-              <Text style={styles.error}>
-                {error}
-              </Text>
-            ) : null}
-
-            {message ? (
-              <Text style={styles.success}>
-                {message}
-              </Text>
-            ) : null}
-
-            <TouchableOpacity
-              onPress={handleForgotPassword}
-            >
-              <Text style={styles.link}>
-                Forgot Password?
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={{
-                backgroundColor: "#16a34a",
-                padding: 17,
-                borderRadius: 18,
-                alignItems: "center",
-                marginTop: 12,
-              }}
-              onPress={() =>
-                navigation.navigate("DemoLogin")
-              }
-            >
-              <Text
-                style={{
-                  color: "#fff",
-                  fontWeight: "bold",
-                  fontSize: 16,
-                }}
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <View style={styles.mainWrapper}>
+            <View style={styles.card}>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.cardScrollContent}
               >
-                🚀 Try Demo
-              </Text>
-            </TouchableOpacity>
+                {/* TOP ROLE SWITCH TABS */}
+                <View style={styles.roleTabContainer}>
+                  <TouchableOpacity
+                    style={[
+                      styles.roleTab,
+                      activeRole === "master" && styles.roleTabActive,
+                    ]}
+                    onPress={() => handleRoleChange("master")}
+                    activeOpacity={0.8}
+                  >
+                    <Icon
+                      name="shield-account"
+                      size={18}
+                      color={activeRole === "master" ? "#ffffff" : "#64748b"}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text
+                      style={[
+                        styles.roleTabText,
+                        activeRole === "master" && styles.roleTabTextActive,
+                      ]}
+                    >
+                      Master
+                    </Text>
+                  </TouchableOpacity>
 
-            <TouchableOpacity
-              onPress={() =>
-                navigation.navigate("Register")
-              }
-            >
-              <Text style={styles.link}>
-                Register →
-              </Text>
-            </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.roleTab,
+                      activeRole === "employee" && styles.roleTabActive,
+                    ]}
+                    onPress={() => handleRoleChange("employee")}
+                    activeOpacity={0.8}
+                  >
+                    <Icon
+                      name="account-tie"
+                      size={18}
+                      color={activeRole === "employee" ? "#ffffff" : "#64748b"}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text
+                      style={[
+                        styles.roleTabText,
+                        activeRole === "employee" && styles.roleTabTextActive,
+                      ]}
+                    >
+                      Employee
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <FastImage
+                  source={require("../assets/Bag.gif")}
+                  style={styles.topImage}
+                  resizeMode={FastImage.resizeMode.contain}
+                />
+
+                <Text style={styles.title}>Sign In</Text>
+
+                <Text style={styles.subtitle}>
+                  Enter valid email & password to continue
+                </Text>
+
+                <TextInput
+                  placeholder="Email"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.input}
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  returnKeyType="next"
+                  onSubmitEditing={() => passwordRef.current?.focus()}
+                />
+
+                <TextInput
+                  ref={passwordRef}
+                  placeholder="Password"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.input}
+                  secureTextEntry={!showPassword}
+                  value={password}
+                  onChangeText={setPassword}
+                  returnKeyType="done"
+                  onSubmitEditing={handleLogin}
+                />
+
+                <TouchableOpacity
+                  onPress={() => setShowPassword(!showPassword)}
+                >
+                  <Text style={styles.showText}>
+                    {showPassword ? "Hide Password" : "Show Password"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.button}
+                  onPress={handleLogin}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.btnText}>Login</Text>
+                  )}
+                </TouchableOpacity>
+
+                {error ? <Text style={styles.error}>{error}</Text> : null}
+
+                {message ? <Text style={styles.success}>{message}</Text> : null}
+
+                <TouchableOpacity onPress={handleForgotPassword}>
+                  <Text style={styles.link}>Forgot Password?</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: "#16a34a",
+                    padding: 17,
+                    borderRadius: 18,
+                    alignItems: "center",
+                    marginTop: 12,
+                  }}
+                  onPress={() => navigation.navigate("DemoLogin")}
+                >
+                  <Text
+                    style={{
+                      color: "#fff",
+                      fontWeight: "bold",
+                      fontSize: 16,
+                    }}
+                  >
+                    🚀 Try Demo
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => navigation.navigate("Register")}
+                >
+                  <Text style={styles.link}>Register →</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
           </View>
-        </ScrollView>
+        </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#eef2ff",
+    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
+  },
+  mainWrapper: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+  },
   card: {
+    width: "100%",
+    height: "99%",
     backgroundColor: "#ffffff",
     borderRadius: 35,
-    padding: 25,
+    overflow: "hidden",
     shadowColor: "#000",
     shadowOpacity: 0.08,
     shadowRadius: 10,
     elevation: 6,
   },
-
+  cardScrollContent: {
+    padding: 25,
+    paddingBottom: 35,
+  },
+  roleTabContainer: {
+    flexDirection: "row",
+    backgroundColor: "#f1f5f9",
+    borderRadius: 18,
+    padding: 4,
+    marginBottom: 16,
+  },
+  roleTab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    borderRadius: 14,
+  },
+  roleTabActive: {
+    backgroundColor: "#2563eb",
+    shadowColor: "#2563eb",
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  roleTabText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#64748b",
+  },
+  roleTabTextActive: {
+    color: "#ffffff",
+    fontWeight: "700",
+  },
   topImage: {
-    width: 220,
-    height: 220,
+    width: 350,
+    height: 180,
     alignSelf: "center",
     marginBottom: 5,
   },
-
   title: {
     fontSize: 34,
     color: "#1e3a8a",
@@ -316,14 +370,12 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontWeight: "bold",
   },
-
   subtitle: {
     textAlign: "center",
     color: "#64748b",
-    marginBottom: 30,
+    marginBottom: 20,
     fontSize: 15,
   },
-
   input: {
     backgroundColor: "#f8fafc",
     color: "#111827",
@@ -334,14 +386,12 @@ const styles = StyleSheet.create({
     borderColor: "#e2e8f0",
     fontSize: 15,
   },
-
   showText: {
     color: "#2563eb",
     marginBottom: 15,
     fontWeight: "600",
     textAlign: "right",
   },
-
   button: {
     backgroundColor: "#2563eb",
     padding: 17,
@@ -352,27 +402,23 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 6,
   },
-
   btnText: {
     color: "#fff",
     fontWeight: "bold",
     fontSize: 16,
   },
-
   error: {
     color: "#ef4444",
     marginTop: 15,
     textAlign: "center",
     fontWeight: "600",
   },
-
   success: {
     color: "#16a34a",
     marginTop: 15,
     textAlign: "center",
     fontWeight: "600",
   },
-
   link: {
     color: "#2563eb",
     marginTop: 18,
