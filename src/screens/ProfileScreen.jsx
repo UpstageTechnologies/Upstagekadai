@@ -13,7 +13,8 @@ import {
   Platform,
   StatusBar,
   ToastAndroid,
-  ActivityIndicator
+  ActivityIndicator,
+  Switch,
 } from "react-native";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { launchImageLibrary } from "react-native-image-picker";
@@ -29,8 +30,9 @@ import { auth, db } from "../utils/firebaseConfig";
 
 LogBox.ignoreLogs(["VirtualizedLists should never be nested"]);
 
-export default function ProfileScreen({ navigation }) {
-  const [activeTab, setActiveTab] = useState("profile");
+export default function ProfileScreen({ navigation, route }) {
+  const initialTab = route?.params?.initialTab || route?.params?.tab || "profile";
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [currentMode, setCurrentMode] = useState("local");
 
   // Profile States
@@ -41,11 +43,18 @@ export default function ProfileScreen({ navigation }) {
 
   // Shop Profile States
   const [shopLogo, setShopLogo] = useState(null);
+  const [shopImage, setShopImage] = useState(null); // Puthusa add panniya Shop Image/Banner State
   const [shopName, setShopName] = useState("");
   const [gstNumber, setGstNumber] = useState("");
   const [address, setAddress] = useState("");
   const [customShopUid, setCustomShopUid] = useState("");
   const [isUidActive, setIsUidActive] = useState(true);
+
+  // Shop Operational Settings (Online Shopping & Shop Status)
+  const [isOnlineShoppingEnabled, setIsOnlineShoppingEnabled] = useState(true);
+  const [isShopOpen, setIsShopOpen] = useState(true);
+  const [savingOnlineShopping, setSavingOnlineShopping] = useState(false);
+  const [savingShopStatus, setSavingShopStatus] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const { theme } = useTheme();
@@ -91,9 +100,29 @@ export default function ProfileScreen({ navigation }) {
         }
         setAddress(fetchedAddress);
 
-        // Cloud Firestore-ல் இருந்து இமேஜ்களை முதலில் எடுக்கும்
+        // Load Online Shopping & Shop Status settings
+        // Default to true for existing/older shops when field is undefined
+        // Explicitly preserve saved false values
+        const onlineShoppingVal =
+          data[`${activeMode}_isOnlineShoppingEnabled`] !== undefined
+            ? data[`${activeMode}_isOnlineShoppingEnabled`]
+            : data.isOnlineShoppingEnabled !== undefined
+            ? data.isOnlineShoppingEnabled
+            : true;
+        setIsOnlineShoppingEnabled(onlineShoppingVal !== false);
+
+        const shopStatusVal =
+          data[`${activeMode}_isShopOpen`] !== undefined
+            ? data[`${activeMode}_isShopOpen`]
+            : data.isShopOpen !== undefined
+            ? data.isShopOpen
+            : true;
+        setIsShopOpen(shopStatusVal !== false);
+
+        // Cloud Firestore-ൽ இருந்து இமேஜ்களை எடுப்பது
         const cloudImage = data[`${activeMode}_profileImage`] || data.profileImage || null;
         const cloudLogo = data[`${activeMode}_shopLogo`] || data.shopLogo || null;
+        const cloudShopImage = data[`${activeMode}_shopImage`] || data.shopImage || null;
 
         if (cloudImage) {
           setImage(cloudImage);
@@ -110,13 +139,20 @@ export default function ProfileScreen({ navigation }) {
           const savedLogo = await AsyncStorage.getItem(`${activeMode}_shopLogo_${uid}`);
           if (savedLogo) setShopLogo(savedLogo);
         }
+
+        if (cloudShopImage) {
+          setShopImage(cloudShopImage);
+          await AsyncStorage.setItem(`${activeMode}_shopImage_${uid}`, cloudShopImage);
+        } else {
+          const savedShopImage = await AsyncStorage.getItem(`${activeMode}_shopImage_${uid}`);
+          if (savedShopImage) setShopImage(savedShopImage);
+        }
       }
     } catch (err) {
       console.log("Load user error:", err);
     }
   };
 
-  // Base64 helper: ஒருவேளை picker-ல் base64 கிடைக்கவில்லை என்றால் RNFS மூலம் மாற்றித் தரும்
   const getBase64FromAsset = async (asset) => {
     if (asset.base64) {
       return `data:${asset.type || "image/jpeg"};base64,${asset.base64}`;
@@ -185,6 +221,105 @@ export default function ProfileScreen({ navigation }) {
     );
   };
 
+  // Puthusa add panniya Shop Image Picker function
+  const pickShopImage = () => {
+    launchImageLibrary(
+      {
+        mediaType: "photo",
+        maxWidth: 800,
+        maxHeight: 600,
+        quality: 0.7,
+        includeBase64: true,
+      },
+      async (res) => {
+        if (res.didCancel || res.errorCode) return;
+        if (res.assets && res.assets.length > 0) {
+          const base64Uri = await getBase64FromAsset(res.assets[0]);
+          if (base64Uri) {
+            setShopImage(base64Uri);
+            const session = await getSession();
+            const uid = session?.uid || auth.currentUser?.uid;
+            if (uid) {
+              await AsyncStorage.setItem(`${currentMode}_shopImage_${uid}`, base64Uri);
+            }
+          }
+        }
+      }
+    );
+  };
+
+  const handleToggleOnlineShopping = async (val) => {
+    if (savingOnlineShopping || savingShopStatus) return;
+    const prevVal = isOnlineShoppingEnabled;
+    setIsOnlineShoppingEnabled(val);
+    setSavingOnlineShopping(true);
+
+    try {
+      const session = await getSession();
+      const uid = session?.uid || auth.currentUser?.uid;
+      if (!uid) {
+        throw new Error("User session not found. Please re-login.");
+      }
+
+      await updateDoc(doc(db, "users", uid), {
+        [`${currentMode}_isOnlineShoppingEnabled`]: val,
+        isOnlineShoppingEnabled: val,
+      });
+
+      if (Platform.OS === "android") {
+        ToastAndroid.show(
+          `Online Shopping ${val ? "Enabled (ON)" : "Disabled (OFF)"}`,
+          ToastAndroid.SHORT
+        );
+      }
+    } catch (err) {
+      console.error("Toggle online shopping error:", err);
+      setIsOnlineShoppingEnabled(prevVal);
+      Alert.alert(
+        "Save Failed",
+        "Could not update Online Shopping setting: " + (err.message || "Unknown error")
+      );
+    } finally {
+      setSavingOnlineShopping(false);
+    }
+  };
+
+  const handleToggleShopStatus = async (val) => {
+    if (savingOnlineShopping || savingShopStatus) return;
+    const prevVal = isShopOpen;
+    setIsShopOpen(val);
+    setSavingShopStatus(true);
+
+    try {
+      const session = await getSession();
+      const uid = session?.uid || auth.currentUser?.uid;
+      if (!uid) {
+        throw new Error("User session not found. Please re-login.");
+      }
+
+      await updateDoc(doc(db, "users", uid), {
+        [`${currentMode}_isShopOpen`]: val,
+        isShopOpen: val,
+      });
+
+      if (Platform.OS === "android") {
+        ToastAndroid.show(
+          `Shop Status updated: ${val ? "Shop Open (ON)" : "Shop Closed (OFF)"}`,
+          ToastAndroid.SHORT
+        );
+      }
+    } catch (err) {
+      console.error("Toggle shop status error:", err);
+      setIsShopOpen(prevVal);
+      Alert.alert(
+        "Save Failed",
+        "Could not update Shop Status setting: " + (err.message || "Unknown error")
+      );
+    } finally {
+      setSavingShopStatus(false);
+    }
+  };
+
   const saveProfile = async () => {
     try {
       setLoading(true);
@@ -197,9 +332,7 @@ export default function ProfileScreen({ navigation }) {
         return;
       }
 
-      // Firestore document size limit 1MB என்பதால் base64 சரியான அளவில் சேமிக்கப்படுகிறது
       const updateData = {
-        // Mode-specific fields
         [`${currentMode}_ownerName`]: ownerName || "",
         [`${currentMode}_email`]: email || "",
         [`${currentMode}_phone`]: phone || "",
@@ -208,8 +341,10 @@ export default function ProfileScreen({ navigation }) {
         [`${currentMode}_address`]: address || "",
         [`${currentMode}_profileImage`]: image || null,
         [`${currentMode}_shopLogo`]: shopLogo || null,
+        [`${currentMode}_shopImage`]: shopImage || null, // Shop Image data save aagum
+        [`${currentMode}_isOnlineShoppingEnabled`]: isOnlineShoppingEnabled !== false,
+        [`${currentMode}_isShopOpen`]: isShopOpen !== false,
 
-        // Common Fallback fields (மற்ற screens & devices-க்கு)
         ownerName: ownerName || "",
         email: email || "",
         phone: phone || "",
@@ -218,13 +353,16 @@ export default function ProfileScreen({ navigation }) {
         address: address || "",
         profileImage: image || null,
         shopLogo: shopLogo || null,
+        shopImage: shopImage || null,
+        isOnlineShoppingEnabled: isOnlineShoppingEnabled !== false,
+        isShopOpen: isShopOpen !== false,
       };
 
       await updateDoc(doc(db, "users", uid), updateData);
 
-      // Save to local cache
       if (image) await AsyncStorage.setItem(`${currentMode}_profileImage_${uid}`, image);
       if (shopLogo) await AsyncStorage.setItem(`${currentMode}_shopLogo_${uid}`, shopLogo);
+      if (shopImage) await AsyncStorage.setItem(`${currentMode}_shopImage_${uid}`, shopImage);
 
       Alert.alert("Success", `${currentMode.toUpperCase()} Details Updated Successfully`);
     } catch (e) {
@@ -260,77 +398,76 @@ export default function ProfileScreen({ navigation }) {
         </View>
 
       {/* UID Status Banner */}
-<View
-  style={[
-    styles.uidBanner,
-    {
-      backgroundColor: isUidActive ? "#ecfdf5" : "#fef2f2",
-      borderColor: isUidActive ? "#10b981" : "#ef4444",
-    },
-  ]}
->
-  <Icon
-    name={isUidActive ? "shield-check" : "shield-alert"}
-    size={24}
-    color={isUidActive ? "#16a34a" : "#ef4444"}
-  />
+      <View
+        style={[
+          styles.uidBanner,
+          {
+            backgroundColor: isUidActive ? "#ecfdf5" : "#fef2f2",
+            borderColor: isUidActive ? "#10b981" : "#ef4444",
+          },
+        ]}
+      >
+        <Icon
+          name={isUidActive ? "shield-check" : "shield-alert"}
+          size={24}
+          color={isUidActive ? "#16a34a" : "#ef4444"}
+        />
 
-  <View style={{ marginLeft: 10, flex: 1 }}>
-    <Text
-      numberOfLines={1}
-      ellipsizeMode="middle"
-      style={{
-        fontWeight: "700",
-        color: isUidActive ? "#16a34a" : "#ef4444",
-        fontSize: 13,
-      }}
-    >
-      Shop UID: {isUidActive ? customShopUid : "Subscription Inactive"}
-    </Text>
-    <Text
-      style={{
-        fontSize: 12,
-        color: isUidActive ? "#15803d" : "#b91c1c",
-        marginTop: 2,
-      }}
-    >
-      Status: {isUidActive ? "Active" : "Disabled / Expired"}
-    </Text>
+        <View style={{ marginLeft: 10, flex: 1 }}>
+          <Text
+            numberOfLines={1}
+            ellipsizeMode="middle"
+            style={{
+              fontWeight: "700",
+              color: isUidActive ? "#16a34a" : "#ef4444",
+              fontSize: 13,
+            }}
+          >
+            Shop UID: {isUidActive ? customShopUid : "Subscription Inactive"}
+          </Text>
+          <Text
+            style={{
+              fontSize: 12,
+              color: isUidActive ? "#15803d" : "#b91c1c",
+              marginTop: 2,
+            }}
+          >
+            Status: {isUidActive ? "Active" : "Disabled / Expired"}
+          </Text>
 
-    {!isUidActive && (
-      <TouchableOpacity onPress={() => navigation.navigate("Subscription")}>
-        <Text
-          style={{
-            color: "#2563eb",
-            fontWeight: "bold",
-            fontSize: 13,
-            marginTop: 4,
-          }}
-        >
-          Renew Subscription to Unlock UID →
-        </Text>
-      </TouchableOpacity>
-    )}
-  </View>
+          {!isUidActive && (
+            <TouchableOpacity onPress={() => navigation.navigate("Subscription")}>
+              <Text
+                style={{
+                  color: "#2563eb",
+                  fontWeight: "bold",
+                  fontSize: 13,
+                  marginTop: 4,
+                }}
+              >
+                Renew Subscription to Unlock UID →
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
 
-  {/* Active ஆக இருக்கும் போது மட்டும் Copy Button காட்டும் */}
-  {isUidActive && (
-    <TouchableOpacity
-      activeOpacity={0.7}
-      onPress={() => {
-        Clipboard.setString(customShopUid);
-        if (Platform.OS === "android") {
-          ToastAndroid.show("Shop UID copied!", ToastAndroid.SHORT);
-        } else {
-          Alert.alert("Copied", "Shop UID copied to clipboard!");
-        }
-      }}
-      style={styles.copyBtn}
-    >
-      <Icon name="content-copy" size={18} color="#16a34a" />
-    </TouchableOpacity>
-  )}
-</View>
+        {isUidActive && (
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => {
+              Clipboard.setString(customShopUid);
+              if (Platform.OS === "android") {
+                ToastAndroid.show("Shop UID copied!", ToastAndroid.SHORT);
+              } else {
+                Alert.alert("Copied", "Shop UID copied to clipboard!");
+              }
+            }}
+            style={styles.copyBtn}
+          >
+            <Icon name="content-copy" size={18} color="#16a34a" />
+          </TouchableOpacity>
+        )}
+      </View>
 
         {/* Tab Toggle */}
         <View style={[styles.tabContainer, { backgroundColor: theme.card, borderColor: theme.border }]}>
@@ -406,13 +543,14 @@ export default function ProfileScreen({ navigation }) {
         {/* Shop Tab */}
         {activeTab === "shop" && (
           <View style={styles.sectionContainer}>
+            {/* Existing Shop Logo */}
             <View style={styles.imageWrap}>
               <TouchableOpacity onPress={pickShopLogo} activeOpacity={0.8} style={{ alignItems: "center" }}>
                 {shopLogo ? (
-                  <Image source={{ uri: shopLogo }} style={{ width: 100, height: 100, borderRadius: 20 }} />
+                  <Image source={{ uri: shopLogo }} style={styles.image} />
                 ) : (
-                  <View style={{ width: 100, height: 100, borderRadius: 20, backgroundColor: "#e5e7eb", justifyContent: "center", alignItems: "center" }}>
-                    <Icon name="store" size={40} color="#6366f1" />
+                  <View style={styles.placeholder}>
+                    <Icon name="store" size={40} color="#fff" />
                   </View>
                 )}
                 <View style={styles.editBtn}>
@@ -420,6 +558,28 @@ export default function ProfileScreen({ navigation }) {
                 </View>
               </TouchableOpacity>
               <Text style={[styles.labelText, { color: theme.text }]}>Shop Logo</Text>
+            </View>
+
+            {/* Puthusa add panniya Shop Image / Store Photo Section */}
+            <View style={{ marginBottom: 25 }}>
+              <Text style={[styles.labelText, { color: theme.text, textAlign: "left", marginBottom: 8, fontSize: 14 }]}>
+                Shop / Store Display Image (For Customer Apps)
+              </Text>
+              <TouchableOpacity onPress={pickShopImage} activeOpacity={0.8} style={[styles.shopBannerContainer, { borderColor: theme.border, backgroundColor: theme.card }]}>
+                {shopImage ? (
+                  <Image source={{ uri: shopImage }} style={styles.shopBannerImage} />
+                ) : (
+                  <View style={styles.shopBannerPlaceholder}>
+                    <Icon name="image-plus" size={32} color="#6366f1" />
+                    <Text style={{ color: theme.text, marginTop: 6, fontSize: 13, fontWeight: "500" }}>
+                      Tap to upload Shop / Store Banner Image
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.editBannerBtn}>
+                  <Icon name="camera" size={16} color="#fff" />
+                </View>
+              </TouchableOpacity>
             </View>
 
             <TextInput
@@ -438,6 +598,92 @@ export default function ProfileScreen({ navigation }) {
               value={gstNumber}
               onChangeText={setGstNumber}
             />
+
+            {/* 2. Online Shopping — ON/OFF switch */}
+            <View style={[styles.switchCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <View style={styles.switchInfo}>
+                <View style={styles.switchTitleRow}>
+                  <Icon name="shopping" size={20} color={isOnlineShoppingEnabled ? "#6366f1" : "#94a3b8"} />
+                  <Text style={[styles.switchTitle, { color: theme.text }]}>Online Shopping</Text>
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      { backgroundColor: isOnlineShoppingEnabled ? "#e0e7ff" : "#f1f5f9" },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusBadgeText,
+                        { color: isOnlineShoppingEnabled ? "#4338ca" : "#64748b" },
+                      ]}
+                    >
+                      {isOnlineShoppingEnabled ? "ON" : "OFF"}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.switchSubtitle}>
+                  {isOnlineShoppingEnabled
+                    ? "Online Shopping Enabled. Customers can place online orders."
+                    : "Online Shopping Disabled. Customers cannot place online orders."}
+                </Text>
+              </View>
+              <View style={styles.switchAction}>
+                {savingOnlineShopping ? (
+                  <ActivityIndicator size="small" color="#6366f1" />
+                ) : (
+                  <Switch
+                    value={isOnlineShoppingEnabled}
+                    onValueChange={handleToggleOnlineShopping}
+                    thumbColor="#ffffff"
+                    trackColor={{ false: "#cbd5e1", true: "#6366f1" }}
+                    disabled={savingOnlineShopping || savingShopStatus}
+                  />
+                )}
+              </View>
+            </View>
+
+            {/* 3. Shop Status — ON/OFF switch */}
+            <View style={[styles.switchCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <View style={styles.switchInfo}>
+                <View style={styles.switchTitleRow}>
+                  <Icon name="store-clock" size={20} color={isShopOpen ? "#10b981" : "#ef4444"} />
+                  <Text style={[styles.switchTitle, { color: theme.text }]}>Shop Status</Text>
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      { backgroundColor: isShopOpen ? "#ecfdf5" : "#fef2f2" },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusBadgeText,
+                        { color: isShopOpen ? "#15803d" : "#b91c1c" },
+                      ]}
+                    >
+                      {isShopOpen ? "ON (Open)" : "OFF (Closed)"}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.switchSubtitle}>
+                  {isShopOpen
+                    ? "Shop Open. Customers can view and place orders."
+                    : "Shop Closed. Customers can view products, but cannot place orders."}
+                </Text>
+              </View>
+              <View style={styles.switchAction}>
+                {savingShopStatus ? (
+                  <ActivityIndicator size="small" color="#10b981" />
+                ) : (
+                  <Switch
+                    value={isShopOpen}
+                    onValueChange={handleToggleShopStatus}
+                    thumbColor="#ffffff"
+                    trackColor={{ false: "#cbd5e1", true: "#10b981" }}
+                    disabled={savingOnlineShopping || savingShopStatus}
+                  />
+                )}
+              </View>
+            </View>
 
             <View style={{ zIndex: 1000, marginBottom: 20 }}>
               <GooglePlacesAutocomplete
@@ -588,6 +834,38 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#fff",
   },
+  shopBannerContainer: {
+    width: "100%",
+    height: 160,
+    borderRadius: 18,
+    borderWidth: 1,
+    overflow: "hidden",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  shopBannerImage: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  shopBannerPlaceholder: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  editBannerBtn: {
+    position: "absolute",
+    bottom: 10,
+    right: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#16a34a",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
   input: {
     marginBottom: 18,
     borderRadius: 18,
@@ -612,13 +890,56 @@ const styles = StyleSheet.create({
     marginBottom: 40,
   },
   copyBtn: {
-  padding: 8,
-  backgroundColor: "#d1fae5",
-  borderRadius: 8,
-  marginLeft: 8,
-  justifyContent: "center",
-  alignItems: "center",
-},
+    padding: 8,
+    backgroundColor: "#d1fae5",
+    borderRadius: 8,
+    marginLeft: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   logoutText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
   labelText: { textAlign: "center", marginTop: 8, fontWeight: "600" },
+  switchCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    marginBottom: 18,
+  },
+  switchInfo: {
+    flex: 1,
+    marginRight: 12,
+  },
+  switchTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 4,
+  },
+  switchTitle: {
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  switchSubtitle: {
+    fontSize: 12,
+    color: "#64748b",
+    lineHeight: 16,
+  },
+  switchAction: {
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 50,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginLeft: 6,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
 });

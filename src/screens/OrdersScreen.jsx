@@ -25,6 +25,9 @@ import { useTheme } from "../theme/ThemeContext";
 
 const TABS = ["All", "New", "Hold", "Completed", "Rejected"];
 
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asText = (value) => value == null ? "" : String(value);
+
 export default function OrdersScreen() {
   const route = useRoute();
   const navigation = useNavigation();
@@ -49,14 +52,14 @@ export default function OrdersScreen() {
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
-      navigation.navigate("Home"); 
+      navigation.navigate("Dashboard");
     }
   };
 
   const getSubCol = (mode) => (mode === "global" ? "global_orders" : "local_orders");
 
-  useEffect(() => {
-    let unsubs = [];
+useEffect(() => {
+    let unsubscribe = null;
     let isMounted = true;
 
     const loadOrders = async () => {
@@ -71,6 +74,7 @@ export default function OrdersScreen() {
         if (!isMounted) return;
         setUid(session.uid);
 
+        // App Mode-ah route params ya illa AsyncStorage-la irunthu eduthukkurom
         let activeMode = route.params?.appMode;
         if (!activeMode) {
           const savedMode = await AsyncStorage.getItem("app_mode");
@@ -79,83 +83,45 @@ export default function OrdersScreen() {
 
         if (!isMounted) return;
         setCurrentAppMode(activeMode);
-        const subCollectionName = getSubCol(activeMode);
 
-        let subColOrders = [];
-        let legacyOrders = [];
+        // Mode-ku etha maari correct collection name set panrathu (Strict separation)
+        const subCollectionName = activeMode === "global" ? "global_orders" : "local_orders";
 
-        const mergeAndSetOrders = () => {
-          if (!isMounted) return;
+        console.log(`📡 Fetching from: users/${session.uid}/${subCollectionName}`);
 
-          // Merge both arrays without duplicate order IDs
-          const orderMap = new Map();
-
-          // Add legacy orders first (filtered by mode)
-          legacyOrders.forEach(item => {
-            const scope = (item.deliveryScope || "").toLowerCase();
-            const isMatch = activeMode === "global"
-              ? (scope === "global" || item.isGlobalMode === true)
-              : (scope === "local" || !item.deliveryScope || item.isGlobalMode === false);
-
-            if (isMatch) {
-              orderMap.set(item.id, item);
-            }
-          });
-
-          // Sub-collection orders take priority/override
-          subColOrders.forEach(item => {
-            orderMap.set(item.id, item);
-          });
-
-          const combined = Array.from(orderMap.values()).filter(item => {
-          const name = (item.customerName || "").toLowerCase();
-          return !name.includes("walk-in") && !item.isWalkIn;
-        });
-
-          // Sort descending by date
-          combined.sort((a, b) => {
-            const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
-            const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
-            return dateB - dateA;
-          });
-
-          setOrders(combined);
-          setLoading(false);
-        };
-
-        // 1. Listen to sub-collection (local_orders / global_orders)
-        const unsubSubCol = onSnapshot(
+        // Antha specific collection-ah mattum real-time-la listen panrathu
+        unsubscribe = onSnapshot(
           collection(db, "users", session.uid, subCollectionName),
-          (snap) => {
-            subColOrders = snap.docs.map(d => ({
-              id: d.id,
-              ...d.data(),
-            }));
-            mergeAndSetOrders();
-          },
-          (err) => {
-            console.log("Sub-collection snapshot error:", err);
-            if (isMounted) setLoading(false);
-          }
-        );
-        unsubs.push(unsubSubCol);
+          (snapshot) => {
+            if (!isMounted) return;
 
-        // 2. Listen to legacy collection ("orders") concurrently
-        const unsubLegacy = onSnapshot(
-          collection(db, "users", session.uid, "orders"),
-          (legacySnap) => {
-            legacyOrders = legacySnap.docs.map(d => ({
-              id: d.id,
+            const fetchedOrders = snapshot.docs.map(d => ({
               ...d.data(),
+              id: String(d.id),
             }));
-            mergeAndSetOrders();
+
+            // Walk-in customers-ah filter pani thallirom
+            const filtered = fetchedOrders.filter(item => {
+              const name = asText(item.customerName).toLowerCase();
+              const orderType = asText(item.orderType || item.type).toLowerCase();
+              return !name.includes("walk-in") && !name.includes("walk in") && !orderType.includes("walk-in") && !item.isWalkIn;
+            });
+
+            // Date descending order-la sort panrathu (Latest first)
+            filtered.sort((a, b) => {
+              const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+              const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+              return dateB - dateA;
+            });
+
+            setOrders(filtered);
+            setLoading(false);
           },
           (err) => {
-            console.log("Legacy snapshot error:", err);
+            console.log("Collection snapshot error:", err);
             if (isMounted) setLoading(false);
           }
         );
-        unsubs.push(unsubLegacy);
 
       } catch (e) {
         console.log("loadOrders Error:", e);
@@ -167,7 +133,9 @@ export default function OrdersScreen() {
 
     return () => {
       isMounted = false;
-      unsubs.forEach(unsub => unsub && unsub());
+      if (unsubscribe) {
+        unsubscribe();
+      }
     };
   }, [route.params?.appMode]);
 
@@ -189,8 +157,8 @@ export default function OrdersScreen() {
         if (orderDoc.exists()) {
           const orderData = orderDoc.data();
           let orderedItems = orderData.items || [];
-          if (!orderedItems.length && orderData.orderedShops) {
-            const currentShopSection = orderData.orderedShops.find(s => s.shopId === uid);
+          if (!orderedItems.length && Array.isArray(orderData.orderedShops)) {
+            const currentShopSection = orderData.orderedShops.find(s => s?.shopId === uid);
             if (currentShopSection) {
               orderedItems = currentShopSection.items || [];
             }
@@ -280,7 +248,7 @@ export default function OrdersScreen() {
         const snap = await getDoc(customerRef);
         if (snap.exists()) {
           const data = snap.data();
-          const updatedShops = (data.orderedShops || []).map(shop => {
+          const updatedShops = asArray(data.orderedShops).map(shop => {
             if (shop.shopId === uid) { return { ...shop, status: status }; }
             return shop;
           });
@@ -316,7 +284,7 @@ export default function OrdersScreen() {
         const snap = await getDoc(customerRef);
         if (snap.exists()) {
           const data = snap.data();
-          const updatedShops = (data.orderedShops || []).map(shop => {
+          const updatedShops = asArray(data.orderedShops).map(shop => {
             if (shop.shopId === uid) { 
               return { ...shop, status: restoredStatus, pendingMessage: "", pendingUntil: null }; 
             }
@@ -435,8 +403,8 @@ export default function OrdersScreen() {
   const filteredOrders = useMemo(() => {
     return orders.filter(item => {
       // 1. Walk-in Customer orders-ஐ filter செய்து நீக்குதல்
-      const custName = (item.customerName || "").toLowerCase().trim();
-      const orderType = (item.orderType || item.type || "").toLowerCase().trim();
+      const custName = asText(item.customerName).toLowerCase().trim();
+      const orderType = asText(item.orderType || item.type).toLowerCase().trim();
       
       if (
         custName.includes("walk-in") || 
@@ -447,7 +415,7 @@ export default function OrdersScreen() {
         return false;
       }
 
-      const currentStatus = (item.status || "Pending Verification").trim();
+      const currentStatus = asText(item.status || "Pending Verification").trim();
 
       // Tab Filtering
       if (activeTab === "New") {
@@ -466,11 +434,11 @@ export default function OrdersScreen() {
       // Search Filtering
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
-        const idMatch = (item.orderId || item.id || "").toLowerCase().includes(q);
-        const nameMatch = (item.customerName || "").toLowerCase().includes(q);
-        const phoneMatch = (item.customerPhone || "").includes(q);
-        const itemMatch = (item.items || []).some(prod => 
-          (prod.itemName || prod.name || "").toLowerCase().includes(q)
+        const idMatch = asText(item.orderId || item.id).toLowerCase().includes(q);
+        const nameMatch = asText(item.customerName).toLowerCase().includes(q);
+        const phoneMatch = asText(item.customerPhone).includes(q);
+        const itemMatch = asArray(item.items).some(prod => 
+          asText(prod?.itemName || prod?.name).toLowerCase().includes(q)
         );
         return idMatch || nameMatch || phoneMatch || itemMatch;
       }
@@ -484,20 +452,21 @@ export default function OrdersScreen() {
     const next = nextStatus(item.status, item.lastStatus);
     const activeTimeline = (current, targetArray) => targetArray.includes(current);
 
-    let displayItems = item.items || [];
-    if (!displayItems.length && item.orderedShops) {
-      const myShop = item.orderedShops.find(s => s.shopId === uid);
+    let displayItems = asArray(item.items);
+    if (!displayItems.length && Array.isArray(item.orderedShops)) {
+      const myShop = item.orderedShops.find(s => s?.shopId === uid);
       if (myShop) displayItems = myShop.items || [];
     }
+    displayItems = asArray(displayItems);
 
-    const orderTotal = item.totalAmount || item.total || displayItems.reduce((sum, p) => sum + ((p.price || 0) * (p.qty || 1)), 0);
+    const orderTotal = Number(item.totalAmount ?? item.total ?? displayItems.reduce((sum, p) => sum + (Number(p?.price) || 0) * (Number(p?.qty) || 1), 0)) || 0;
 
     return (
       <View style={[styles.card, { backgroundColor: theme.card }]}>
         <View style={styles.topRow}>
-          <Text style={[styles.orderId, { color: theme.text }]}>🆔 {item.orderId || item.id}</Text>
-          <View style={[styles.statusBadge, getBadgeStyle(item.status)]}>
-            <Text style={[styles.statusText, getBadgeTextStyle(item.status)]}>{item.status || "Pending Verification"}</Text>
+          <Text style={[styles.orderId, { color: theme.text }]}>🆔 {asText(item.orderId || item.id)}</Text>
+          <View style={[styles.statusBadge, getBadgeStyle(asText(item.status))]}>
+            <Text style={[styles.statusText, getBadgeTextStyle(asText(item.status))]}>{asText(item.status || "Pending Verification")}</Text>
           </View>
         </View>
 
@@ -506,15 +475,15 @@ export default function OrdersScreen() {
         <View style={styles.infoSection}>
           <View style={styles.infoRow}>
             <Icon name="account" size={18} color={darkMode ? "#94a3b8" : "#64748b"} />
-            <Text style={[styles.name, { color: theme.text }]}>{item.customerName || "Online Customer"}</Text>
+            <Text style={[styles.name, { color: theme.text }]}>{asText(item.customerName || "Online Customer")}</Text>
           </View>
           <View style={styles.infoRow}>
             <Icon name="phone" size={18} color={darkMode ? "#94a3b8" : "#64748b"} />
-            <Text style={[styles.phone, { color: darkMode ? "#cbd5e1" : "#475569" }]}>{item.customerPhone || "N/A"}</Text>
+            <Text style={[styles.phone, { color: darkMode ? "#cbd5e1" : "#475569" }]}>{asText(item.customerPhone || "N/A")}</Text>
           </View>
           <View style={styles.infoRow}>
             <Icon name="map-marker" size={18} color="#ef4444" />
-            <Text style={[styles.address, { color: darkMode ? "#94a3b8" : "#64748b" }]}>{item.deliveryAddress || "Address not provided"}</Text>
+            <Text style={[styles.address, { color: darkMode ? "#94a3b8" : "#64748b" }]}>{asText(item.deliveryAddress || "Address not provided")}</Text>
           </View>
         </View>
 
@@ -589,8 +558,8 @@ export default function OrdersScreen() {
             <View style={[styles.itemsBlock, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc" }]}>
               {displayItems.map((product, index) => (
                 <View key={index} style={styles.itemRow}>
-                  <Text style={[styles.itemName, { color: theme.text }]}>• {product.itemName || product.name}</Text>
-                  <Text style={[styles.itemQty, { color: darkMode ? "#94a3b8" : "#64748b" }]}>Qty: {product.qty || 1}</Text>
+                  <Text style={[styles.itemName, { color: theme.text }]}>• {asText(product?.itemName || product?.name || "Item")}</Text>
+                  <Text style={[styles.itemQty, { color: darkMode ? "#94a3b8" : "#64748b" }]}>Qty: {asText(product?.qty || 1)}</Text>
                 </View>
               ))}
             </View>
@@ -719,7 +688,7 @@ export default function OrdersScreen() {
       {/* List */}
       <FlatList
         data={filteredOrders}
-        keyExtractor={item => item.id}
+        keyExtractor={item => String(item.id)}
         renderItem={renderItem}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}

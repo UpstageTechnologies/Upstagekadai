@@ -22,8 +22,8 @@ android {
         applicationId "com.myshopapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 12
-        versionName "1.0.11"
+        versionCode 25
+        versionName "1.0.24"
     }
 
     buildFeatures {
@@ -31,7 +31,9 @@ android {
     }
 
     packagingOptions {
-        pickFirst '**/*.so'
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 
     signingConfigs {
@@ -68,7 +70,10 @@ dependencies {
     implementation("com.facebook.react:react-android")
 
     // Animated GIF support
-    implementation("com.facebook.fresco:animated-gif:3.1.3")
+    implementation("com.facebook.fresco:animated-gif:3.6.0")
+
+    // Google ML Kit Subject Segmentation (100% Free on-device background remover via Google Play Services)
+    implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
 
     implementation platform("com.google.firebase:firebase-bom:34.2.0")
     implementation "com.google.firebase:firebase-messaging"

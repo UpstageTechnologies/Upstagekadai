@@ -2,6 +2,8 @@ import notifee, {
   AndroidImportance,
 } from "@notifee/react-native";
 
+export const PENDING_NOTIFICATION_PRESS_KEY = "pending_notification_press";
+
 export async function createNotificationChannel() {
   try {
     const channelId = await notifee.createChannel({
@@ -32,7 +34,8 @@ export async function displayNotification({
   body,
   orderId = "",
   status = "",
-  screen = "Orders",
+  screen = "",
+  messageId = "",
 }) {
   try {
     await notifee.displayNotification({
@@ -42,7 +45,8 @@ export async function displayNotification({
       data: {
         orderId: String(orderId || ""),
         status: String(status || ""),
-        screen: String(screen || "Orders"),
+        screen: String(screen || ""),
+        ...(messageId ? { messageId: String(messageId) } : {}),
       },
 
       android: {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -10,10 +10,13 @@ import {
   Platform,
   SafeAreaView,
   StatusBar,
+  ScrollView,
+  Keyboard,
+  TouchableWithoutFeedback,
   Alert,
+  Image,
 } from "react-native";
 import { auth } from "../utils/firebaseConfig";
-import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import FastImage from "react-native-fast-image";
 import { LogBox } from "react-native";
@@ -21,13 +24,22 @@ import {
   getFirestore,
   collection,
   getDocs,
-  doc,
-  setDoc,
 } from "firebase/firestore";
+import { launchImageLibrary } from "react-native-image-picker";
+import RNFS from "react-native-fs";
+import { useTheme } from "../theme/ThemeContext";
+import { LightTheme } from "../theme/colors";
+import useKeyboardFocusScroll from "../hooks/useKeyboardFocusScroll";
 
 LogBox.ignoreLogs(["VirtualizedLists should never be nested"]);
 
 export default function RegisterScreen({ navigation }) {
+  const themeContext = useTheme() || {};
+  const theme = themeContext.theme || LightTheme;
+  const darkMode = Boolean(themeContext.darkMode);
+  const { scrollRef, onScroll, inputRef, focusInput } = useKeyboardFocusScroll();
+  const passwordRef = useRef(null);
+  const confirmPasswordRef = useRef(null);
   // Step State (1: Shop Info, 2: Location Master, 3: Account Info)
   const [currentStep, setCurrentStep] = useState(1);
 
@@ -40,6 +52,9 @@ export default function RegisterScreen({ navigation }) {
   const [phone, setPhone] = useState("");
 
   const [deliveryScope] = useState("Local");
+
+  // Shop Banner / Image State
+  const [shopImage, setShopImage] = useState(null);
 
   // ================= LOCATION MASTER =================
   const [country, setCountry] = useState("India");
@@ -88,10 +103,6 @@ export default function RegisterScreen({ navigation }) {
     .filter(Boolean)
     .join(", ");
 
-  useEffect(() => {
-    loadCountries();
-  }, []);
-
   const db = getFirestore(auth.app);
 
   const makeDocId = (value) => {
@@ -102,8 +113,45 @@ export default function RegisterScreen({ navigation }) {
       .replace(/^-+|-+$/g, "");
   };
 
+  const getBase64FromAsset = async (asset) => {
+    if (asset.base64) {
+      return `data:${asset.type || "image/jpeg"};base64,${asset.base64}`;
+    }
+    if (asset.uri) {
+      try {
+        const base64Data = await RNFS.readFile(asset.uri, "base64");
+        return `data:${asset.type || "image/jpeg"};base64,${base64Data}`;
+      } catch (err) {
+        console.error("RNFS Base64 convert error:", err);
+        return asset.uri;
+      }
+    }
+    return null;
+  };
+
+  const pickShopImage = () => {
+    launchImageLibrary(
+      {
+        mediaType: "photo",
+        maxWidth: 800,
+        maxHeight: 600,
+        quality: 0.7,
+        includeBase64: true,
+      },
+      async (res) => {
+        if (res.didCancel || res.errorCode) return;
+        if (res.assets && res.assets.length > 0) {
+          const base64Uri = await getBase64FromAsset(res.assets[0]);
+          if (base64Uri) {
+            setShopImage(base64Uri);
+          }
+        }
+      }
+    );
+  };
+
   // ================= LOAD LOCATIONS =================
-  const loadCountries = async () => {
+  const loadCountries = useCallback(async () => {
     try {
       const snapshot = await getDocs(collection(db, "location_master"));
       const list = snapshot.docs.map((item) => ({
@@ -115,7 +163,11 @@ export default function RegisterScreen({ navigation }) {
     } catch (error) {
       console.error("Load countries error:", error);
     }
-  };
+  }, [db]);
+
+  useEffect(() => {
+    loadCountries();
+  }, [loadCountries]);
 
   const loadStates = async (selectedCountryCode = countryCode) => {
     try {
@@ -219,6 +271,7 @@ export default function RegisterScreen({ navigation }) {
 
   const saveNewLocation = async () => {
     const value = newLocationName.trim();
+
     if (!value) {
       Alert.alert("Required", `Please enter ${addLocationType} name`);
       return;
@@ -233,13 +286,38 @@ export default function RegisterScreen({ navigation }) {
         return;
       }
 
+      const response = await fetch(
+        "https://us-central1-scaner-billing.cloudfunctions.net/addLocation",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            data: {
+              type: addLocationType,
+              name: value,
+              countryCode,
+              state,
+              district,
+              city,
+            },
+          }),
+        }
+      );
+      const responseText = await response.text();
+      let responseJson;
+      try {
+        responseJson = JSON.parse(responseText);
+      } catch {
+        throw new Error("Invalid response from location service");
+      }
+      if (!response.ok) {
+        throw new Error(
+          responseJson?.error?.message ||
+            `Location service failed (${response.status})`
+        );
+      }
+
       if (addLocationType === "Country") {
-        await setDoc(doc(db, "location_master", newId), {
-          name: value,
-          code: newId.toUpperCase(),
-          type: "country",
-          isActive: true,
-        });
         await loadCountries();
         setCountry(value);
         setCountryCode(newId);
@@ -255,15 +333,6 @@ export default function RegisterScreen({ navigation }) {
       }
 
       if (addLocationType === "State") {
-        await setDoc(
-          doc(db, "location_master", countryCode, "states", newId),
-          {
-            name: value,
-            type: "state",
-            country: countryCode,
-            isActive: true,
-          }
-        );
         await loadStates(countryCode);
         setState(value);
         setDistrict("");
@@ -277,24 +346,6 @@ export default function RegisterScreen({ navigation }) {
       }
 
       if (addLocationType === "District") {
-        await setDoc(
-          doc(
-            db,
-            "location_master",
-            countryCode,
-            "states",
-            makeDocId(state),
-            "districts",
-            newId
-          ),
-          {
-            name: value,
-            type: "district",
-            country: countryCode,
-            state: state,
-            isActive: true,
-          }
-        );
         await loadDistricts(state);
         setDistrict(value);
         setCity("");
@@ -306,27 +357,6 @@ export default function RegisterScreen({ navigation }) {
       }
 
       if (addLocationType === "City") {
-        await setDoc(
-          doc(
-            db,
-            "location_master",
-            countryCode,
-            "states",
-            makeDocId(state),
-            "districts",
-            makeDocId(district),
-            "cities",
-            newId
-          ),
-          {
-            name: value,
-            type: "city",
-            country: countryCode,
-            state: state,
-            district: district,
-            isActive: true,
-          }
-        );
         await loadCities(state, district);
         setCity(value);
         setArea("");
@@ -336,30 +366,6 @@ export default function RegisterScreen({ navigation }) {
       }
 
       if (addLocationType === "Area") {
-        await setDoc(
-          doc(
-            db,
-            "location_master",
-            countryCode,
-            "states",
-            makeDocId(state),
-            "districts",
-            makeDocId(district),
-            "cities",
-            makeDocId(city),
-            "areas",
-            newId
-          ),
-          {
-            name: value,
-            type: "area",
-            country: countryCode,
-            state: state,
-            district: district,
-            city: city,
-            isActive: true,
-          }
-        );
         await loadAreas(state, district, city);
         setArea(value);
         setAreaSearch("");
@@ -377,6 +383,7 @@ export default function RegisterScreen({ navigation }) {
 
   // ================= STEP NAVIGATION & VALIDATION =================
   const handleNextStep = () => {
+    Keyboard.dismiss();
     setError("");
     if (currentStep === 1) {
       if (!shopName.trim() || !shopType || !ownerName.trim() || !phone.trim()) {
@@ -394,6 +401,7 @@ export default function RegisterScreen({ navigation }) {
   };
 
   const handlePrevStep = () => {
+    Keyboard.dismiss();
     setError("");
     if (currentStep > 1) {
       setCurrentStep(currentStep - 1);
@@ -404,6 +412,7 @@ export default function RegisterScreen({ navigation }) {
 
   // ================= REGISTRATION =================
   const handleRegister = async () => {
+    Keyboard.dismiss();
     setError("");
     setMessage("");
 
@@ -437,6 +446,7 @@ export default function RegisterScreen({ navigation }) {
         shopLat: null,
         shopLon: null,
         deliveryScope,
+        shopImage: shopImage || null,
       };
 
       const response = await fetch(
@@ -491,32 +501,34 @@ export default function RegisterScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView
-      style={{
-        flex: 1,
-        backgroundColor: "#eef2ff",
-        paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
-      }}
-    >
+    <SafeAreaView style={{ flex: 1, backgroundColor: darkMode ? theme.background : "#eef2ff", paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0 }}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
       >
-        <KeyboardAwareScrollView
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View style={{ flex: 1 }}>
+        <ScrollView
+          ref={scrollRef}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
           contentContainerStyle={{
             flexGrow: 1,
             justifyContent: "center",
-            paddingVertical: 25,
-            paddingHorizontal: 20,
+            paddingVertical: 16,
+            paddingHorizontal: 18,
+            paddingBottom: 150,
           }}
         >
-          <View style={styles.card}>
+          <View style={[styles.card, { backgroundColor: darkMode ? theme.card : "#ffffff", shadowColor: "#000" }]}>
             {/* Top Navigation & Progress */}
             <View style={styles.stepHeader}>
               <TouchableOpacity onPress={handlePrevStep} style={styles.backBtn}>
-                <Text style={styles.backArrow}>←</Text>
+                <Text style={[styles.backArrow, { color: darkMode ? theme.text : "#1e3a8a" }]}>←</Text>
               </TouchableOpacity>
               <View style={styles.progressBarBg}>
                 <View
@@ -533,7 +545,7 @@ export default function RegisterScreen({ navigation }) {
                   ]}
                 />
               </View>
-              <Text style={styles.stepCounterText}>{currentStep}/3</Text>
+              <Text style={[styles.stepCounterText, { color: darkMode ? theme.subText : "#64748b" }]}>{currentStep}/3</Text>
             </View>
 
             {/* STEP 1: SHOP INFORMATION */}
@@ -544,27 +556,51 @@ export default function RegisterScreen({ navigation }) {
                   style={styles.topImage}
                   resizeMode={FastImage.resizeMode.contain}
                 />
-                <Text style={styles.title}>Shop Details</Text>
-                <Text style={styles.subtitle}>
+                <Text style={[styles.title, { color: darkMode ? theme.text : "#1e3a8a" }]}>Shop Details</Text>
+                <Text style={[styles.subtitle, { color: darkMode ? theme.subText : "#64748b" }]}>
                   Enter your store and contact information
                 </Text>
 
+                {/* Shop Image / Banner Picker */}
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={[styles.labelText, { textAlign: "left", marginBottom: 8 }]}>
+                    Shop / Store Display Image
+                  </Text>
+                  <TouchableOpacity onPress={pickShopImage} activeOpacity={0.8} style={styles.shopBannerContainer}>
+                    {shopImage ? (
+                      <Image source={{ uri: shopImage }} style={styles.shopBannerImage} />
+                    ) : (
+                      <View style={styles.shopBannerPlaceholder}>
+                        <Ionicons name="image-outline" size={32} color="#2563eb" />
+                        <Text style={{ color: "#475569", marginTop: 6, fontSize: 13, fontWeight: "500" }}>
+                          Tap to upload Shop Image
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.editBannerBtn}>
+                      <Ionicons name="camera" size={16} color="#fff" />
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
                 <TextInput
+                  ref={inputRef("shopName")}
                   placeholder="Shop Name"
                   placeholderTextColor="#94a3b8"
-                  style={styles.input}
+                  style={[styles.input, { backgroundColor: darkMode ? theme.card : "#f8fafc", color: darkMode ? theme.text : "#111827", borderColor: darkMode ? theme.border : "#e2e8f0" }]}
                   value={shopName}
                   onChangeText={setShopName}
+                  onFocus={() => focusInput("shopName")}
                 />
 
                 <TouchableOpacity
-                  style={[styles.input, { justifyContent: "center" }]}
+                  style={[styles.input, { justifyContent: "center", backgroundColor: darkMode ? theme.card : "#f8fafc", borderColor: darkMode ? theme.border : "#e2e8f0" }]}
                   onPress={() => setShowTypeDropdown(!showTypeDropdown)}
                   activeOpacity={0.7}
                 >
                   <Text
                     style={{
-                      color: shopType ? "#111827" : "#94a3b8",
+                      color: shopType ? (darkMode ? theme.text : "#111827") : "#94a3b8",
                       fontSize: 15,
                     }}
                   >
@@ -573,7 +609,7 @@ export default function RegisterScreen({ navigation }) {
                 </TouchableOpacity>
 
                 {showTypeDropdown && (
-                  <View style={styles.dropdownContainer}>
+                  <View style={[styles.dropdownContainer, { backgroundColor: darkMode ? theme.card : "#ffffff", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                     {shopTypes.map((type, index) => (
                       <TouchableOpacity
                         key={index}
@@ -588,27 +624,32 @@ export default function RegisterScreen({ navigation }) {
                           setShowTypeDropdown(false);
                         }}
                       >
-                        <Text style={styles.dropdownText}>{type}</Text>
+                        <Text style={[styles.dropdownText, { color: darkMode ? theme.text : "#334155" }]}>{type}</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
                 )}
 
                 <TextInput
+                  ref={inputRef("ownerName")}
                   placeholder="Owner Name"
                   placeholderTextColor="#94a3b8"
-                  style={styles.input}
+                  style={[styles.input, { backgroundColor: darkMode ? theme.card : "#f8fafc", color: darkMode ? theme.text : "#111827", borderColor: darkMode ? theme.border : "#e2e8f0" }]}
                   value={ownerName}
                   onChangeText={setOwnerName}
+                  onFocus={() => focusInput("ownerName")}
                 />
 
                 <TextInput
+                  ref={inputRef("phone")}
                   placeholder="Phone Number"
                   placeholderTextColor="#94a3b8"
                   keyboardType="phone-pad"
-                  style={styles.input}
+                  style={[styles.input, { backgroundColor: darkMode ? theme.card : "#f8fafc", color: darkMode ? theme.text : "#111827", borderColor: darkMode ? theme.border : "#e2e8f0" }]}
                   value={phone}
                   onChangeText={setPhone}
+                  onFocus={() => focusInput("phone")}
+                  returnKeyType="done"
                 />
               </View>
             )}
@@ -616,18 +657,19 @@ export default function RegisterScreen({ navigation }) {
             {/* STEP 2: LOCATION MASTER */}
             {currentStep === 2 && (
               <View>
-                <Text style={[styles.title, { marginTop: 10 }]}>
+                <Text style={[styles.title, { marginTop: 10, color: darkMode ? theme.text : "#1e3a8a" }]}>
                   Location Master
                 </Text>
-                <Text style={styles.subtitle}>
+                <Text style={[styles.subtitle, { color: darkMode ? theme.subText : "#64748b" }]}>
                   Select or add your shop location hierarchy
                 </Text>
 
                 {/* Country */}
-                <Text style={styles.sectionLabel}>Country</Text>
-                <View style={styles.locationSearchBox}>
+                <Text style={[styles.sectionLabel, { color: darkMode ? theme.subText : "#475569" }]}>Country</Text>
+                <View style={[styles.locationSearchBox, { backgroundColor: darkMode ? theme.card : "#f8fafc", borderColor: darkMode ? theme.border : "#dbe4f0" }]}>
                   <Text style={styles.searchIcon}>🔍</Text>
                   <TextInput
+                    ref={inputRef("countrySearch")}
                     value={countrySearch}
                     onChangeText={(text) => {
                       setCountrySearch(text);
@@ -635,12 +677,13 @@ export default function RegisterScreen({ navigation }) {
                     }}
                     placeholder={country || "Search Country"}
                     placeholderTextColor="#94a3b8"
-                    style={styles.locationSearchInput}
+                    style={[styles.locationSearchInput, { color: darkMode ? theme.text : "#111827" }]}
+                    onFocus={() => focusInput("countrySearch")}
                   />
                 </View>
 
                 {showCountryDropdown && (
-                  <View style={styles.locationList}>
+                  <View style={[styles.locationList, { backgroundColor: darkMode ? theme.card : "#ffffff", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                     {countries
                       .filter((item) =>
                         item.name
@@ -667,7 +710,7 @@ export default function RegisterScreen({ navigation }) {
                             loadStates(item.id);
                           }}
                         >
-                          <Text style={styles.locationItemText}>
+                          <Text style={[styles.locationItemText, { color: darkMode ? theme.text : "#334155" }]}>
                             {item.name}
                           </Text>
                         </TouchableOpacity>
@@ -685,7 +728,7 @@ export default function RegisterScreen({ navigation }) {
                 )}
 
                 {/* State */}
-                <Text style={styles.sectionLabel}>State</Text>
+                <Text style={[styles.sectionLabel, { color: darkMode ? theme.subText : "#475569" }]}>State</Text>
                 <View
                   style={[
                     styles.locationSearchBox,
@@ -694,21 +737,22 @@ export default function RegisterScreen({ navigation }) {
                 >
                   <Text style={styles.searchIcon}>🔍</Text>
                   <TextInput
+                    ref={inputRef("stateSearch")}
                     editable={!!countryCode}
                     value={stateSearch}
-                    onFocus={() => setShowStateDropdown(true)}
+                    onFocus={() => { setShowStateDropdown(true); focusInput("stateSearch"); }}
                     onChangeText={(text) => {
                       setStateSearch(text);
                       setShowStateDropdown(true);
                     }}
                     placeholder={state || "Search State"}
                     placeholderTextColor="#94a3b8"
-                    style={styles.locationSearchInput}
+                    style={[styles.locationSearchInput, { color: darkMode ? theme.text : "#111827" }]}
                   />
                 </View>
 
                 {showStateDropdown && countryCode && (
-                  <View style={styles.locationList}>
+                  <View style={[styles.locationList, { backgroundColor: darkMode ? theme.card : "#ffffff", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                     {states
                       .filter((item) =>
                         item.name
@@ -732,7 +776,7 @@ export default function RegisterScreen({ navigation }) {
                             loadDistricts(item.name);
                           }}
                         >
-                          <Text style={styles.locationItemText}>
+                          <Text style={[styles.locationItemText, { color: darkMode ? theme.text : "#334155" }]}>
                             {item.name}
                           </Text>
                         </TouchableOpacity>
@@ -748,7 +792,7 @@ export default function RegisterScreen({ navigation }) {
                 )}
 
                 {/* District */}
-                <Text style={styles.sectionLabel}>District</Text>
+                <Text style={[styles.sectionLabel, { color: darkMode ? theme.subText : "#475569" }]}>District</Text>
                 <View
                   style={[
                     styles.locationSearchBox,
@@ -757,21 +801,22 @@ export default function RegisterScreen({ navigation }) {
                 >
                   <Text style={styles.searchIcon}>🔍</Text>
                   <TextInput
+                    ref={inputRef("districtSearch")}
                     editable={!!state}
                     value={districtSearch}
-                    onFocus={() => setShowDistrictDropdown(true)}
+                    onFocus={() => { setShowDistrictDropdown(true); focusInput("districtSearch"); }}
                     onChangeText={(text) => {
                       setDistrictSearch(text);
                       setShowDistrictDropdown(true);
                     }}
                     placeholder={district || "Search District"}
                     placeholderTextColor="#94a3b8"
-                    style={styles.locationSearchInput}
+                    style={[styles.locationSearchInput, { color: darkMode ? theme.text : "#111827" }]}
                   />
                 </View>
 
                 {showDistrictDropdown && state && (
-                  <View style={styles.locationList}>
+                  <View style={[styles.locationList, { backgroundColor: darkMode ? theme.card : "#ffffff", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                     {districts
                       .filter((item) =>
                         item.name
@@ -793,7 +838,7 @@ export default function RegisterScreen({ navigation }) {
                             loadCities(state, item.name);
                           }}
                         >
-                          <Text style={styles.locationItemText}>
+                          <Text style={[styles.locationItemText, { color: darkMode ? theme.text : "#334155" }]}>
                             {item.name}
                           </Text>
                         </TouchableOpacity>
@@ -811,7 +856,7 @@ export default function RegisterScreen({ navigation }) {
                 )}
 
                 {/* City */}
-                <Text style={styles.sectionLabel}>City</Text>
+                <Text style={[styles.sectionLabel, { color: darkMode ? theme.subText : "#475569" }]}>City</Text>
                 <View
                   style={[
                     styles.locationSearchBox,
@@ -820,21 +865,22 @@ export default function RegisterScreen({ navigation }) {
                 >
                   <Text style={styles.searchIcon}>🔍</Text>
                   <TextInput
+                    ref={inputRef("citySearch")}
                     editable={!!district}
                     value={citySearch}
-                    onFocus={() => setShowCityDropdown(true)}
+                    onFocus={() => { setShowCityDropdown(true); focusInput("citySearch"); }}
                     onChangeText={(text) => {
                       setCitySearch(text);
                       setShowCityDropdown(true);
                     }}
                     placeholder={city || "Search City"}
                     placeholderTextColor="#94a3b8"
-                    style={styles.locationSearchInput}
+                    style={[styles.locationSearchInput, { color: darkMode ? theme.text : "#111827" }]}
                   />
                 </View>
 
                 {showCityDropdown && district && (
-                  <View style={styles.locationList}>
+                  <View style={[styles.locationList, { backgroundColor: darkMode ? theme.card : "#ffffff", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                     {cities
                       .filter((item) =>
                         item.name
@@ -854,7 +900,7 @@ export default function RegisterScreen({ navigation }) {
                             loadAreas(state, district, item.name);
                           }}
                         >
-                          <Text style={styles.locationItemText}>
+                          <Text style={[styles.locationItemText, { color: darkMode ? theme.text : "#334155" }]}>
                             {item.name}
                           </Text>
                         </TouchableOpacity>
@@ -870,7 +916,7 @@ export default function RegisterScreen({ navigation }) {
                 )}
 
                 {/* Area */}
-                <Text style={styles.sectionLabel}>Area</Text>
+                <Text style={[styles.sectionLabel, { color: darkMode ? theme.subText : "#475569" }]}>Area</Text>
                 <View
                   style={[
                     styles.locationSearchBox,
@@ -879,21 +925,22 @@ export default function RegisterScreen({ navigation }) {
                 >
                   <Text style={styles.searchIcon}>🔍</Text>
                   <TextInput
+                    ref={inputRef("areaSearch")}
                     editable={!!city}
                     value={areaSearch}
-                    onFocus={() => setShowAreaDropdown(true)}
+                    onFocus={() => { setShowAreaDropdown(true); focusInput("areaSearch"); }}
                     onChangeText={(text) => {
                       setAreaSearch(text);
                       setShowAreaDropdown(true);
                     }}
                     placeholder={area || "Search Area"}
                     placeholderTextColor="#94a3b8"
-                    style={styles.locationSearchInput}
+                    style={[styles.locationSearchInput, { color: darkMode ? theme.text : "#111827" }]}
                   />
                 </View>
 
                 {showAreaDropdown && city && (
-                  <View style={styles.locationList}>
+                  <View style={[styles.locationList, { backgroundColor: darkMode ? theme.card : "#ffffff", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                     {areas
                       .filter((item) =>
                         item.name
@@ -910,7 +957,7 @@ export default function RegisterScreen({ navigation }) {
                             setShowAreaDropdown(false);
                           }}
                         >
-                          <Text style={styles.locationItemText}>
+                          <Text style={[styles.locationItemText, { color: darkMode ? theme.text : "#334155" }]}>
                             {item.name}
                           </Text>
                         </TouchableOpacity>
@@ -930,30 +977,39 @@ export default function RegisterScreen({ navigation }) {
             {/* STEP 3: ACCOUNT & CREDENTIALS */}
             {currentStep === 3 && (
               <View>
-                <Text style={[styles.title, { marginTop: 10 }]}>Account</Text>
-                <Text style={styles.subtitle}>
+                <Text style={[styles.title, { marginTop: 10, color: darkMode ? theme.text : "#1e3a8a" }]}>Account</Text>
+                <Text style={[styles.subtitle, { color: darkMode ? theme.subText : "#64748b" }]}>
                   Set up your login credentials
                 </Text>
 
                 <TextInput
+                  ref={inputRef("email")}
                   placeholder="Email"
                   placeholderTextColor="#94a3b8"
                   autoCapitalize="none"
                   keyboardType="email-address"
-                  style={styles.input}
+                  style={[styles.input, { backgroundColor: darkMode ? theme.card : "#f8fafc", color: darkMode ? theme.text : "#111827", borderColor: darkMode ? theme.border : "#e2e8f0" }]}
                   value={email}
                   onChangeText={setEmail}
+                  onFocus={() => focusInput("email")}
+                  returnKeyType="next"
+                  onSubmitEditing={() => passwordRef.current?.focus()}
                 />
 
                 {/* Password Input with Vector Icon Toggle */}
-                <View style={styles.passwordContainer}>
+                <View style={[styles.passwordContainer, { backgroundColor: darkMode ? theme.card : "#f8fafc", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                   <TextInput
+                    ref={node => { passwordRef.current = node; inputRef("password")(node); }}
                     placeholder="Password"
                     placeholderTextColor="#94a3b8"
-                    style={styles.passwordInput}
+                    style={[styles.passwordInput, { color: darkMode ? theme.text : "#111827" }]}
                     secureTextEntry={!showPassword}
                     value={password}
                     onChangeText={setPassword}
+                    onFocus={() => focusInput("password")}
+                    textContentType="newPassword"
+                    returnKeyType="next"
+                    onSubmitEditing={() => confirmPasswordRef.current?.focus()}
                   />
                   <TouchableOpacity
                     onPress={() => setShowPassword(!showPassword)}
@@ -969,14 +1025,18 @@ export default function RegisterScreen({ navigation }) {
                 </View>
 
                 {/* Confirm Password Input with Vector Icon Toggle */}
-                <View style={styles.passwordContainer}>
+                <View style={[styles.passwordContainer, { backgroundColor: darkMode ? theme.card : "#f8fafc", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
                   <TextInput
+                    ref={node => { confirmPasswordRef.current = node; inputRef("confirmPassword")(node); }}
                     placeholder="Confirm Password"
                     placeholderTextColor="#94a3b8"
-                    style={styles.passwordInput}
+                    style={[styles.passwordInput, { color: darkMode ? theme.text : "#111827" }]}
                     secureTextEntry={!showConfirmPassword}
                     value={confirmPassword}
                     onChangeText={setConfirmPassword}
+                    onFocus={() => focusInput("confirmPassword")}
+                    textContentType="newPassword"
+                    returnKeyType="done"
                   />
                   <TouchableOpacity
                     onPress={() => setShowConfirmPassword(!showConfirmPassword)}
@@ -998,17 +1058,19 @@ export default function RegisterScreen({ navigation }) {
             {/* Add Location Modal */}
             {showAddLocation && (
               <View style={styles.addLocationModalOverlay}>
-                <View style={styles.addLocationModal}>
-                  <Text style={styles.addLocationTitle}>
+                <View style={[styles.addLocationModal, { backgroundColor: darkMode ? theme.card : "#ffffff" }]}>
+                  <Text style={[styles.addLocationTitle, { color: darkMode ? theme.text : "#1e3a8a" }]}>
                     Add New {addLocationType}
                   </Text>
                   <TextInput
+                    ref={inputRef("newLocationName")}
                     value={newLocationName}
                     onChangeText={setNewLocationName}
                     placeholder={`${addLocationType} Name`}
                     placeholderTextColor="#94a3b8"
                     autoFocus
-                    style={styles.input}
+                    style={[styles.input, { backgroundColor: darkMode ? theme.card : "#f8fafc", color: darkMode ? theme.text : "#111827", borderColor: darkMode ? theme.border : "#e2e8f0" }]}
+                    onFocus={() => focusInput("newLocationName")}
                   />
                   <View style={styles.addLocationActions}>
                     <TouchableOpacity
@@ -1061,14 +1123,16 @@ export default function RegisterScreen({ navigation }) {
               </TouchableOpacity>
             )}
 
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-            {message ? <Text style={styles.success}>{message}</Text> : null}
+            {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+            {message ? <Text accessibilityRole="alert" style={styles.success}>{message}</Text> : null}
 
             <TouchableOpacity onPress={() => navigation.navigate("Login")}>
               <Text style={styles.link}>← Back to Login</Text>
             </TouchableOpacity>
           </View>
-        </KeyboardAwareScrollView>
+        </ScrollView>
+        </View>
+        </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1076,13 +1140,17 @@ export default function RegisterScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   card: {
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
     backgroundColor: "#ffffff",
-    borderRadius: 35,
-    padding: 25,
-    shadowColor: "#000",
+    borderRadius: 26,
+    padding: 22,
+    shadowColor: "#14532d",
     shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 6,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
   },
   stepHeader: {
     flexDirection: "row",
@@ -1117,8 +1185,8 @@ const styles = StyleSheet.create({
     color: "#64748b",
   },
   topImage: {
-    width: 320,
-    height: 230,
+    width: 210,
+    height: 118,
     alignSelf: "center",
     marginBottom: 5,
   },
@@ -1132,8 +1200,48 @@ const styles = StyleSheet.create({
   subtitle: {
     textAlign: "center",
     color: "#64748b",
-    marginBottom: 20,
+    marginBottom: 18,
     fontSize: 14,
+  },
+  shopBannerContainer: {
+    width: "100%",
+    height: 132,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+    overflow: "hidden",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  shopBannerImage: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  shopBannerPlaceholder: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  editBannerBtn: {
+    position: "absolute",
+    bottom: 10,
+    right: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#2563eb",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  labelText: {
+    fontWeight: "700",
+    color: "#475569",
+    fontSize: 13,
+    marginLeft: 4,
   },
   sectionLabel: {
     fontSize: 13,
@@ -1145,9 +1253,11 @@ const styles = StyleSheet.create({
   input: {
     backgroundColor: "#f8fafc",
     color: "#111827",
-    padding: 16,
-    marginBottom: 15,
-    borderRadius: 16,
+    minHeight: 54,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
+    marginBottom: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: "#e2e8f0",
     fontSize: 15,
@@ -1156,16 +1266,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#f8fafc",
-    borderRadius: 16,
+    minHeight: 56,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: "#e2e8f0",
-    marginBottom: 15,
+    marginBottom: 12,
     paddingHorizontal: 16,
   },
   passwordInput: {
     flex: 1,
     color: "#111827",
-    paddingVertical: 16,
+    paddingVertical: 13,
     fontSize: 15,
   },
   eyeBtn: {
@@ -1199,8 +1310,10 @@ const styles = StyleSheet.create({
   },
   button: {
     backgroundColor: "#2563eb",
-    padding: 17,
-    borderRadius: 18,
+    minHeight: 54,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
+    borderRadius: 14,
     alignItems: "center",
     shadowColor: "#2563eb",
     shadowOpacity: 0.3,

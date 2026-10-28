@@ -27,9 +27,17 @@ import {
 
 import { doc, getDoc } from "firebase/firestore";
 import { saveSellerFCMToken } from "../utils/fcmToken";
+import { useTheme } from "../theme/ThemeContext";
+import { LightTheme } from "../theme/colors";
+import useKeyboardFocusScroll from "../hooks/useKeyboardFocusScroll";
 
 export default function LoginScreen({ navigation }) {
+  const emailRef = useRef(null);
   const passwordRef = useRef(null);
+  const themeContext = useTheme() || {};
+  const theme = themeContext.theme || LightTheme;
+  const darkMode = Boolean(themeContext.darkMode);
+  const { scrollRef, onScroll, inputRef, focusInput } = useKeyboardFocusScroll();
 
   const [activeRole, setActiveRole] = useState("master"); // 'master' | 'employee'
   const [email, setEmail] = useState("");
@@ -135,25 +143,30 @@ export default function LoginScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: darkMode ? theme.background : "#eef2ff", paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0 }]}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={styles.mainWrapper}>
-            <View style={styles.card}>
+            <View style={[styles.card, { backgroundColor: darkMode ? theme.card : "#ffffff", shadowColor: "#000" }]}>
               <ScrollView
+                ref={scrollRef}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+                onScroll={onScroll}
+                scrollEventThrottle={16}
                 contentContainerStyle={styles.cardScrollContent}
               >
                 {/* TOP ROLE SWITCH TABS */}
-                <View style={styles.roleTabContainer}>
+                <View style={[styles.roleTabContainer, { backgroundColor: darkMode ? theme.background : "#f1f5f9" }]}>
                   <TouchableOpacity
                     style={[
                       styles.roleTab,
-                      activeRole === "master" && styles.roleTabActive,
+                    activeRole === "master" && styles.roleTabActive,
                     ]}
                     onPress={() => handleRoleChange("master")}
                     activeOpacity={0.8}
@@ -161,13 +174,14 @@ export default function LoginScreen({ navigation }) {
                     <Icon
                       name="shield-account"
                       size={18}
-                      color={activeRole === "master" ? "#ffffff" : "#64748b"}
+                      color={activeRole === "master" ? "#ffffff" : (darkMode ? theme.subText : "#64748b")}
                       style={{ marginRight: 6 }}
                     />
                     <Text
                       style={[
                         styles.roleTabText,
                         activeRole === "master" && styles.roleTabTextActive,
+                        { color: activeRole === "master" ? "#ffffff" : (darkMode ? theme.subText : "#64748b") },
                       ]}
                     >
                       Master
@@ -185,13 +199,14 @@ export default function LoginScreen({ navigation }) {
                     <Icon
                       name="account-tie"
                       size={18}
-                      color={activeRole === "employee" ? "#ffffff" : "#64748b"}
+                      color={activeRole === "employee" ? "#ffffff" : (darkMode ? theme.subText : "#64748b")}
                       style={{ marginRight: 6 }}
                     />
                     <Text
                       style={[
                         styles.roleTabText,
                         activeRole === "employee" && styles.roleTabTextActive,
+                        { color: activeRole === "employee" ? "#ffffff" : (darkMode ? theme.subText : "#64748b") },
                       ]}
                     >
                       Employee
@@ -205,46 +220,54 @@ export default function LoginScreen({ navigation }) {
                   resizeMode={FastImage.resizeMode.contain}
                 />
 
-                <Text style={styles.title}>Sign In</Text>
+                <Text style={[styles.eyebrow, { color: "#2563eb" }]}>WELCOME BACK</Text>
+                <Text style={[styles.title, { color: darkMode ? theme.text : "#1e3a8a" }]}>Sign In</Text>
 
-                <Text style={styles.subtitle}>
-                  Enter valid email & password to continue
+                <Text style={[styles.subtitle, { color: darkMode ? theme.subText : "#64748b" }]}>
+                  Sign in to continue to your shop dashboard.
                 </Text>
 
-                <TextInput
-                  placeholder="Email"
-                  placeholderTextColor="#94a3b8"
-                  style={styles.input}
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  returnKeyType="next"
-                  onSubmitEditing={() => passwordRef.current?.focus()}
-                />
+                <View style={[styles.inputShell, { backgroundColor: darkMode ? theme.card : "#f8fafc", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
+                  <Icon name="email-outline" size={20} color={darkMode ? theme.subText : "#64748b"} style={styles.inputIcon} />
+                  <TextInput
+                    ref={node => { emailRef.current = node; inputRef("email")(node); }}
+                    placeholder="Email address"
+                    placeholderTextColor={darkMode ? theme.subText : "#94a3b8"}
+                    style={[styles.input, { color: darkMode ? theme.text : "#111827" }]}
+                    value={email}
+                    onChangeText={setEmail}
+                    onFocus={() => focusInput("email")}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    textContentType="emailAddress"
+                    returnKeyType="next"
+                    onSubmitEditing={() => passwordRef.current?.focus()}
+                  />
+                </View>
 
-                <TextInput
-                  ref={passwordRef}
-                  placeholder="Password"
-                  placeholderTextColor="#94a3b8"
-                  style={styles.input}
-                  secureTextEntry={!showPassword}
-                  value={password}
-                  onChangeText={setPassword}
-                  returnKeyType="done"
-                  onSubmitEditing={handleLogin}
-                />
+                <View style={[styles.inputShell, { backgroundColor: darkMode ? theme.card : "#f8fafc", borderColor: darkMode ? theme.border : "#e2e8f0" }]}>
+                  <Icon name="lock-outline" size={20} color={darkMode ? theme.subText : "#64748b"} style={styles.inputIcon} />
+                  <TextInput
+                    ref={node => { passwordRef.current = node; inputRef("password")(node); }}
+                    placeholder="Password"
+                    placeholderTextColor={darkMode ? theme.subText : "#94a3b8"}
+                    style={[styles.input, { color: darkMode ? theme.text : "#111827" }]}
+                    secureTextEntry={!showPassword}
+                    value={password}
+                    onChangeText={setPassword}
+                    onFocus={() => focusInput("password")}
+                    textContentType="password"
+                    returnKeyType="done"
+                    onSubmitEditing={handleLogin}
+                  />
+                  <TouchableOpacity onPress={() => setShowPassword(value => !value)} accessibilityRole="button" accessibilityLabel={showPassword ? "Hide password" : "Show password"} style={styles.passwordToggle}>
+                    <Icon name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color={darkMode ? theme.subText : "#64748b"} />
+                  </TouchableOpacity>
+                </View>
 
                 <TouchableOpacity
-                  onPress={() => setShowPassword(!showPassword)}
-                >
-                  <Text style={styles.showText}>
-                    {showPassword ? "Hide Password" : "Show Password"}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.button}
+                  style={[styles.button, loading && styles.buttonDisabled]}
                   onPress={handleLogin}
                   disabled={loading}
                 >
@@ -255,9 +278,9 @@ export default function LoginScreen({ navigation }) {
                   )}
                 </TouchableOpacity>
 
-                {error ? <Text style={styles.error}>{error}</Text> : null}
+                {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 
-                {message ? <Text style={styles.success}>{message}</Text> : null}
+                {message ? <Text accessibilityRole="alert" style={styles.success}>{message}</Text> : null}
 
                 <TouchableOpacity onPress={handleForgotPassword}>
                   <Text style={styles.link}>Forgot Password?</Text>
@@ -302,34 +325,37 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#eef2ff",
-    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
   },
   mainWrapper: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingVertical: 15,
+    paddingVertical: 12,
   },
   card: {
     width: "100%",
-    height: "99%",
+    maxWidth: 480,
+    flex: 1,
     backgroundColor: "#ffffff",
-    borderRadius: 35,
+    borderRadius: 28,
     overflow: "hidden",
-    shadowColor: "#000",
     shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 6,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
   },
   cardScrollContent: {
-    padding: 25,
-    paddingBottom: 35,
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    paddingTop: 22,
+    paddingBottom: 140,
   },
   roleTabContainer: {
     flexDirection: "row",
     backgroundColor: "#f1f5f9",
-    borderRadius: 18,
+    borderRadius: 14,
     padding: 4,
     marginBottom: 16,
   },
@@ -358,50 +384,64 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   topImage: {
-    width: 350,
-    height: 180,
+    width: 220,
+    height: 118,
     alignSelf: "center",
-    marginBottom: 5,
+    marginBottom: 8,
+  },
+  eyebrow: {
+    fontSize: 11,
+    letterSpacing: 1.8,
+    fontWeight: "800",
+    textAlign: "center",
+    marginBottom: 7,
   },
   title: {
-    fontSize: 34,
+    fontSize: 30,
     color: "#1e3a8a",
-    marginBottom: 8,
+    marginBottom: 6,
     textAlign: "center",
     fontWeight: "bold",
   },
   subtitle: {
     textAlign: "center",
     color: "#64748b",
-    marginBottom: 20,
-    fontSize: 15,
+    marginBottom: 22,
+    fontSize: 14,
   },
-  input: {
-    backgroundColor: "#f8fafc",
-    color: "#111827",
-    padding: 16,
-    marginBottom: 15,
-    borderRadius: 16,
+  inputShell: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#e2e8f0",
+    paddingHorizontal: 14,
+    marginBottom: 13,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.025,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  inputIcon: { marginRight: 10 },
+  input: {
+    flex: 1,
+    color: "#111827",
+    paddingVertical: 14,
     fontSize: 15,
   },
-  showText: {
-    color: "#2563eb",
-    marginBottom: 15,
-    fontWeight: "600",
-    textAlign: "right",
-  },
+  passwordToggle: { padding: 7, marginLeft: 4 },
   button: {
     backgroundColor: "#2563eb",
-    padding: 17,
-    borderRadius: 18,
+    paddingVertical: 16,
+    borderRadius: 14,
     alignItems: "center",
     shadowColor: "#2563eb",
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 6,
+    marginTop: 5,
   },
+  buttonDisabled: { opacity: 0.7 },
   btnText: {
     color: "#fff",
     fontWeight: "bold",

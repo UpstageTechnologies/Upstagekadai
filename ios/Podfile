@@ -36,8 +36,34 @@ target 'MyShopApp' do
         
         # 💡 Forcefully disable treating warnings as errors for all pods
         config.build_settings['GCC_TREAT_WARNINGS_AS_ERRORS'] = 'NO'
-        config.build_settings['OTHER_CFLAGS'] = '$(inherited) -w'
-        config.build_settings['OTHER_CPLUSPLUSFLAGS'] = '$(inherited) -w'
+        cflags = config.build_settings['OTHER_CFLAGS']
+        if cflags.is_a?(Array)
+          config.build_settings['OTHER_CFLAGS'] = (cflags + ['-w']).uniq
+        elsif cflags.is_a?(String)
+          config.build_settings['OTHER_CFLAGS'] = "#{cflags} -w"
+        else
+          config.build_settings['OTHER_CFLAGS'] = '$(inherited) -w'
+        end
+
+        cxxflags = config.build_settings['OTHER_CPLUSPLUSFLAGS']
+        if cxxflags.is_a?(Array)
+          config.build_settings['OTHER_CPLUSPLUSFLAGS'] = (cxxflags + ['-w']).uniq
+        elsif cxxflags.is_a?(String)
+          config.build_settings['OTHER_CPLUSPLUSFLAGS'] = "#{cxxflags} -w"
+        else
+          config.build_settings['OTHER_CPLUSPLUSFLAGS'] = '$(inherited) -w'
+        end
+
+        if config.name == 'Release'
+          defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS']
+          if defs.is_a?(Array)
+            config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = (defs + ['NDEBUG=1', 'REACT_NATIVE_PRODUCTION=1']).uniq
+          elsif defs.is_a?(String)
+            config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = "#{defs} NDEBUG=1 REACT_NATIVE_PRODUCTION=1"
+          else
+            config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = ['$(inherited)', 'NDEBUG=1', 'REACT_NATIVE_PRODUCTION=1']
+          end
+        end
       end
     end
   end

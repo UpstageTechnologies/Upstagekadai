@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import RazorpayCheckout from "react-native-razorpay";
 import { useTheme } from "../theme/ThemeContext";
-import RNBluetoothEscposPrinter from "react-native-thermal-receipt-printer";
+import bluetoothPrinter from "../utils/bluetoothPrinter";
 import RNPrint from "react-native-print";
 import { useFocusEffect } from "@react-navigation/native";
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, Modal, Image, SafeAreaView, StatusBar, Platform, Keyboard, useWindowDimensions } from "react-native";
@@ -13,6 +13,7 @@ import DropDownPicker from 'react-native-dropdown-picker';
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
 import { auth, db } from "../utils/firebaseConfig";
+import { getEffectiveProductPrice } from "../utils/pricing";
 import { addDoc, serverTimestamp, collection, onSnapshot, doc, updateDoc, getDocs, deleteDoc, setDoc } from "firebase/firestore";
 import QRCode from "react-native-qrcode-svg";
 import { onAuthStateChanged } from "firebase/auth";
@@ -85,10 +86,18 @@ export default function SalesScreen({ navigation }) {
   const [currentQrMode, setCurrentQrMode] = useState("generated");
   const [search, setSearch] = useState("");
   const { darkMode, theme } = useTheme();
+  const [shopAddress, setShopAddress] = useState("");
+  const [shopPhone, setShopPhone] = useState("");
+  const [receiptPaperSize, setReceiptPaperSize] = useState("58mm");
   const [receiptHeader, setReceiptHeader] = useState("");
   const [receiptFooter, setReceiptFooter] = useState("Thank you!");
   const [receiptStoreLogo, setReceiptStoreLogo] = useState(false);
   const [receiptLogoUri, setReceiptLogoUri] = useState(null);
+  const [receiptShowQr, setReceiptShowQr] = useState(true);
+  const [receiptShowBarcode, setReceiptShowBarcode] = useState(false);
+  const [printAutomatically, setPrintAutomatically] = useState(false);
+  const [enableReceiptPrinting, setEnableReceiptPrinting] = useState(true);
+  const [printerCopies, setPrinterCopies] = useState("1");
 
   // =========================================================
   // 🔌 PROFESSIONAL BACKGROUND HARDWARE SCANNER ENGINE
@@ -282,6 +291,8 @@ export default function SalesScreen({ navigation }) {
           const data = snap.data();
           if (data) {
             setShopName(data.shopName || "MY SHOP");
+            if (data.address) setShopAddress(data.address);
+            if (data.phone) setShopPhone(data.phone);
             setGstNumber(data.gstNumber || "");
             setGstEnabled(data.gstEnabled ?? false);
             setGstPercentage(data.gstPercentage || "18");
@@ -296,6 +307,17 @@ export default function SalesScreen({ navigation }) {
               setReceiptStoreLogo(data.receiptConfig.storeLogo ?? false);
               setReceiptHeader(data.receiptConfig.header || "");
               setReceiptFooter(data.receiptConfig.footer || "Thank you!");
+              if (data.receiptConfig.paperSize) setReceiptPaperSize(data.receiptConfig.paperSize);
+              if (data.receiptConfig.showQr !== undefined) setReceiptShowQr(data.receiptConfig.showQr);
+            }
+
+            if (data.printerConfig) {
+              setPrintAutomatically(data.printerConfig.printAutomatically ?? false);
+              setEnableReceiptPrinting(data.printerConfig.enableReceiptPrinting ?? true);
+              if (data.printerConfig.paperSize) setReceiptPaperSize(data.printerConfig.paperSize);
+              if (data.printerConfig.copies) setPrinterCopies(data.printerConfig.copies);
+              if (data.printerConfig.qrCodeOnReceipt !== undefined) setReceiptShowQr(data.printerConfig.qrCodeOnReceipt);
+              if (data.printerConfig.barcodeOnReceipt !== undefined) setReceiptShowBarcode(data.printerConfig.barcodeOnReceipt);
             }
 
             if (!(data.cashEnabled ?? true) && data.upiEnabled) setPaymentMode("UPI");
@@ -370,14 +392,14 @@ export default function SalesScreen({ navigation }) {
       const bNo = `${datePrefix}-${sequenceNum}`;
       const bDate = now.toLocaleDateString("en-GB");
 
-      const subtotal = bill.reduce((sum, i) => sum + (Number(i.price) * i.qty), 0);
+      const subtotal = bill.reduce((sum, i) => sum + (Number(i.salesPrice || i.price || 0) * i.qty), 0);
       const taxTotal = gstEnabled ? bill.reduce((sum, i) => {
         const itemTaxRate = Number(i.taxPercent || gstPercentage || 0);
-        return sum + ((Number(i.price) * i.qty) * (itemTaxRate / 100));
+        return sum + ((Number(i.salesPrice || i.price || 0) * i.qty) * (itemTaxRate / 100));
       }, 0) : 0;
 
       const finalOrderTotal = subtotal + taxTotal;
-      const totalProfit = bill.reduce((sum, i) => sum + (Number(i.salesPrice || i.price) - Number(i.purchasePrice || 0)) * i.qty, 0);
+      const totalProfit = bill.reduce((sum, i) => sum + (Number(i.salesPrice || i.price || 0) - Number(i.purchasePrice || 0)) * i.qty, 0);
 
       await addDoc(collection(db, "users", user.uid, "sales"), {
         billNo: bNo,
@@ -409,6 +431,10 @@ export default function SalesScreen({ navigation }) {
       setShowReview(false);
       setShowReceiptModal(true);
 
+      if (printAutomatically && enableReceiptPrinting) {
+        triggerThermalPrint(bNo, bDate, [...bill], finalOrderTotal);
+      }
+
     } catch (err) {
       Alert.alert("Save failed", err.message);
     }
@@ -433,6 +459,9 @@ export default function SalesScreen({ navigation }) {
   const addToBill = async (item) => {
     if (item.quantity <= 0) return Alert.alert("Out of stock");
 
+    const pricing = getEffectiveProductPrice(item);
+    const effectivePrice = pricing.valid ? pricing.effectivePrice : Number(item.salesPrice || item.price || 0);
+
     const itemId = item.id || item.barcode;
     const exist = bill.find(i => (i.id && i.id === item.id) || (i.barcode && i.barcode === item.barcode));
 
@@ -445,8 +474,12 @@ export default function SalesScreen({ navigation }) {
         id: itemId,
         name: item.itemName || item.name,
         qty: 1,
-        price: Number(item.salesPrice || item.price || 0),
-        salesPrice: Number(item.salesPrice || item.price || 0),
+        price: effectivePrice,
+        salesPrice: effectivePrice,
+        originalSalesPrice: pricing.valid ? pricing.originalPrice : Number(item.originalSalesPrice ?? item.salesPrice ?? item.price ?? 0),
+        discountValue: pricing.valid && pricing.hasDiscount ? pricing.discountValue : 0,
+        discountType: pricing.valid && pricing.hasDiscount ? pricing.discountType : "percent",
+        discountAmount: pricing.valid && pricing.hasDiscount ? pricing.discountAmount : 0,
         purchasePrice: Number(item.purchasePrice ?? 0),
         taxPercent: item.taxPercent || gstPercentage || 0
       }];
@@ -548,37 +581,51 @@ export default function SalesScreen({ navigation }) {
     setTotal(subtotal + taxTotal);
   }, [bill, gstEnabled, gstPercentage]);
 
-  const triggerThermalPrint = async (bNo, bDate) => {
+  const triggerThermalPrint = async (bNo, bDate, explicitBill, explicitTotal) => {
     try {
-      const printers = await RNBluetoothEscposPrinter.getDeviceList();
-      if (printers && printers.length > 0) {
-        const printer = printers[0];
-        await RNBluetoothEscposPrinter.connectPrinter(printer.address);
-        await RNBluetoothEscposPrinter.printerInit();
+      const billItems = (explicitBill && explicitBill.length > 0) ? explicitBill : receiptBill;
+      const finalTotal = explicitTotal !== undefined ? explicitTotal : receiptTotal;
+      const billNumber = bNo || currentBillNo;
+      const billDateStr = bDate || currentBillDate;
 
-        if (receiptStoreLogo && receiptLogoUri) {
-          await RNBluetoothEscposPrinter.printText(`[LOGO]\n`, { align: "center" });
-        }
-        await RNBluetoothEscposPrinter.printText(`${shopName}\n`, { align: "center" });
-        if (gstEnabled && gstNumber) {
-          await RNBluetoothEscposPrinter.printText(`GST: ${gstNumber}\n`, { align: "center" });
-        }
-        await RNBluetoothEscposPrinter.printText(`Bill: ${bNo} | Date: ${bDate}\n`, { align: "center" });
-        await RNBluetoothEscposPrinter.printText("--------------------------------\n");
+      const itemsToPrint = billItems.map((item) => {
+        const itemPrice = Number(item.salesPrice || item.price || 0);
+        const itemQty = Number(item.qty || 1);
+        return {
+          name: item.itemName || item.name || "Item",
+          qty: itemQty,
+          price: itemPrice,
+          total: itemPrice * itemQty,
+        };
+      });
 
-        for (let item of receiptBill) {
-          await RNBluetoothEscposPrinter.printText(`${item.itemName || item.name}\n`);
-          await RNBluetoothEscposPrinter.printText(` ${item.qty} x ₹${item.salesPrice || item.price} = ₹${item.qty * (item.salesPrice || item.price)}\n`);
-        }
+      const qrPayload = shopUpiId
+        ? `upi://pay?pa=${shopUpiId}&pn=${encodeURIComponent(shopName || "Shop")}&am=${finalTotal}&cu=INR`
+        : "";
 
-        await RNBluetoothEscposPrinter.printText("--------------------------------\n");
-        await RNBluetoothEscposPrinter.printText(`TOTAL: ₹${receiptTotal}\n`, { align: "right" });
-        await RNBluetoothEscposPrinter.printText("--------------------------------\n");
-        await RNBluetoothEscposPrinter.printText(`${receiptFooter || "Thank you for your business!"}\n\n\n`, { align: "center" });
-        return;
-      }
-      throw "No printer connected";
+      await bluetoothPrinter.printReceipt({
+        shopName: shopName || "MY SHOP",
+        address: shopAddress || "",
+        phone: shopPhone || "",
+        billNo: billNumber,
+        date: billDateStr,
+        gstNumber: gstEnabled ? gstNumber : "",
+        header: receiptHeader || "",
+        footer: receiptFooter || "Thank you for your business!",
+        items: itemsToPrint,
+        subtotal: finalTotal,
+        total: finalTotal,
+        paymentMode: paymentMode || "CASH",
+        showQr: receiptShowQr && !!qrPayload,
+        qrData: qrPayload,
+        qrCodeData: qrPayload,
+        showBarcode: receiptShowBarcode,
+        paperSize: receiptPaperSize || "58mm",
+        copies: parseInt(printerCopies, 10) || 1,
+      });
+      return;
     } catch (err) {
+      console.log("Bluetooth print fallback to system print:", err);
       const html = `
       <html>
       <head>
@@ -1040,6 +1087,8 @@ export default function SalesScreen({ navigation }) {
               {inventory
                 .filter(item => !selectedCategory || item.category === selectedCategory)
                 .map((item) => {
+                  const pricing = getEffectiveProductPrice(item);
+                  const effectivePrice = pricing.valid ? pricing.effectivePrice : Number(item.salesPrice || item.price || 0);
                   const existingInBill = bill.find(b => (b.id && b.id === item.id) || (b.barcode && b.barcode === item.barcode));
                   const currentQtyInBill = existingInBill ? existingInBill.qty : 0;
 
@@ -1064,7 +1113,7 @@ export default function SalesScreen({ navigation }) {
 
                       <View style={{ flex: 1 }}>
                         <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: "700", color: theme.text }}>{item.itemName || item.name}</Text>
-                        <Text style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Stock: {item.quantity} | <Text style={{ color: "#16a34a", fontWeight: "bold" }}>₹{item.salesPrice || item.price}</Text></Text>
+                        <Text style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Stock: {item.quantity} | {pricing.valid && pricing.hasDiscount ? <><Text style={{ textDecorationLine: "line-through", color: "#94a3b8" }}>₹{pricing.originalPrice.toFixed(2)}</Text><Text> </Text></> : null}<Text style={{ color: "#16a34a", fontWeight: "bold" }}>₹{effectivePrice.toFixed(2)}</Text>{pricing.valid && pricing.hasDiscount ? <Text style={{ color: "#16a34a", fontWeight: "700" }}> {pricing.discountType === "percent" ? `(${pricing.discountValue}% off)` : `(₹${pricing.discountAmount.toFixed(2)} off)`}</Text> : null}</Text>
                       </View>
 
                       {currentQtyInBill > 0 ? (

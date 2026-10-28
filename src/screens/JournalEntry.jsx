@@ -7,7 +7,8 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
-  Modal, 
+  Modal,
+  Alert,
 } from "react-native";
 
 import {
@@ -24,10 +25,11 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import RNPrint from "react-native-print";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import RNFS from "react-native-fs";
-import { useTheme } from "../theme/ThemeContext"; // 🌟 Added Theme Hook
+import { useTheme } from "../theme/ThemeContext";
 import { getSession } from "../utils/session";
+
 export default function JournalEntry({ navigation }) {
-  const { darkMode, theme } = useTheme(); // 🌟 Access theme properties
+  const { darkMode, theme } = useTheme();
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fromDate, setFromDate] = useState(new Date());
@@ -40,6 +42,10 @@ export default function JournalEntry({ navigation }) {
   const [filteredProfit, setFilteredProfit] = useState(0);
   const [shopName, setShopName] = useState("MY SHOP");
   const [shopLogo, setShopLogo] = useState("");
+  const [userPlan, setUserPlan] = useState("Basic");
+  
+  // 🌟 Registration Date & 30 Days (1 Month) Lock States
+  const [isTimeExpired, setIsTimeExpired] = useState(false);
   
   const [currentMode, setCurrentMode] = useState("local");
   
@@ -54,9 +60,38 @@ export default function JournalEntry({ navigation }) {
   const salesDataRef = useRef([]);
   const purchaseDataRef = useRef([]);
 
+  // 🌟 30 Days (1 Month) Check from Registration Date
+  useEffect(() => {
+    const checkRegistrationExpiry = async () => {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const snap = await getDoc(doc(db, "users", user.uid));
+      if (snap.exists()) {
+        const data = snap.data();
+        const plan = data.userPlan || data.subscriptionPlan || "Basic";
+        setUserPlan(plan);
+
+        // Get registration date (trialStartDate or createdAt)
+        const regDateStr = data.trialStartDate || data.createdAt;
+        if (regDateStr) {
+          const regDate = regDateStr.toDate ? regDateStr.toDate() : new Date(regDateStr);
+          const thirtyDaysInMs = 30 * 24 * 60 * 60 * 1000; // Exactly 30 days
+          const expiryTime = regDate.getTime() + thirtyDaysInMs;
+
+          if (Date.now() >= expiryTime) {
+            setIsTimeExpired(true);
+          }
+        }
+      }
+    };
+
+    checkRegistrationExpiry();
+  }, []);
+
   useEffect(() => {
     generateReport();
-  }, [fromDate, toDate, currentMode]); 
+  }, [fromDate, toDate, currentMode, userPlan, isTimeExpired]); 
 
   useEffect(() => {
     const loadShopAndMode = async () => {
@@ -69,6 +104,7 @@ export default function JournalEntry({ navigation }) {
       const snap = await getDoc(doc(db, "users", user.uid));
       if (snap.exists()) {
         setShopName(snap.data().shopName || "MY SHOP");
+        setUserPlan(snap.data().userPlan || snap.data().subscriptionPlan || "Basic");
       }
 
       const logo = await AsyncStorage.getItem(`shopLogo_${user.uid}`);
@@ -80,12 +116,12 @@ export default function JournalEntry({ navigation }) {
   }, []);
 
   useEffect(() => {
-  const checkRole = async () => {
-    const session = await getSession();
-    if (session?.role) setUserRole(session.role);
-  };
-  checkRole();
-}, []);
+    const checkRole = async () => {
+      const session = await getSession();
+      if (session?.role) setUserRole(session.role);
+    };
+    checkRole();
+  }, []);
 
   useEffect(() => {
     const user = auth.currentUser;
@@ -102,7 +138,19 @@ export default function JournalEntry({ navigation }) {
       const map = {};
       const isTargetGlobal = currentMode === "global";
 
-      purchaseData.forEach(bill => {
+      const oneMonthAgo = new Date();
+      oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+
+      const validPurchaseData = purchaseData.filter(bill => {
+        if ((userPlan === "Basic" || userPlan === "Premium") && (isTimeExpired || bill.createdAt?.seconds)) {
+          if (isTimeExpired) return false; // Lock completely after 30 days
+          const d = new Date(bill.createdAt.seconds * 1000);
+          return d >= oneMonthAgo;
+        }
+        return true;
+      });
+
+      validPurchaseData.forEach(bill => {
         (bill.items || []).forEach(item => {
           const name = (item.itemName || item.name || "Unknown Product").trim().toLowerCase();
           if (!map[name]) {
@@ -132,7 +180,15 @@ export default function JournalEntry({ navigation }) {
         });
       });
 
-      const filteredSalesRows = salesData.filter(s => (s.isGlobalMode || false) === isTargetGlobal);
+      const filteredSalesRows = salesData.filter(s => {
+        const modeMatch = (s.isGlobalMode || false) === isTargetGlobal;
+        if ((userPlan === "Basic" || userPlan === "Premium") && (isTimeExpired || s.createdAt?.seconds)) {
+          if (isTimeExpired) return false; // Lock completely after 30 days
+          const d = new Date(s.createdAt.seconds * 1000);
+          return modeMatch && d >= oneMonthAgo;
+        }
+        return modeMatch;
+      });
 
       filteredSalesRows.forEach(bill => {
         (bill.items || []).forEach(item => {
@@ -192,25 +248,29 @@ export default function JournalEntry({ navigation }) {
       unsubSales();
       unsubPurchase();
     };
-  }, [currentMode]);
+  }, [currentMode, userPlan, isTimeExpired]);
 
   const generateReport = () => {
-    const from = new Date(fromDate);
+    let from = new Date(fromDate);
     from.setHours(0, 0, 0, 0);
 
     const to = new Date(toDate);
     to.setHours(23, 59, 59, 999);
 
+    if ((userPlan === "Basic" || userPlan === "Premium") && isTimeExpired) {
+      from = new Date(); 
+    }
+
     const isTargetGlobal = currentMode === "global";
 
-    const sales = salesDataRef.current.filter(item => {
+    const sales = isTimeExpired && (userPlan === "Basic" || userPlan === "Premium") ? [] : salesDataRef.current.filter(item => {
       if (!item.createdAt?.seconds) return false;
       const d = new Date(item.createdAt.seconds * 1000);
       const modeMatch = (item.isGlobalMode || false) === isTargetGlobal;
       return d >= from && d <= to && modeMatch;
     });
 
-    const purchases = purchaseDataRef.current.filter(item => {
+    const purchases = isTimeExpired && (userPlan === "Basic" || userPlan === "Premium") ? [] : purchaseDataRef.current.filter(item => {
       if (!item.createdAt?.seconds) return false;
       const d = new Date(item.createdAt.seconds * 1000);
       return d >= from && d <= to;
@@ -429,6 +489,9 @@ export default function JournalEntry({ navigation }) {
     );
   }
 
+  // 🌟 Check if plan restriction locks the journal view
+  const isJournalLocked = (userPlan === "Basic" || userPlan === "Premium") && isTimeExpired;
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -447,6 +510,12 @@ export default function JournalEntry({ navigation }) {
           </TouchableOpacity>
           <Text style={[styles.title, { color: theme.text }]}>
             Journal ({currentMode === "global" ? "Global" : "Local"})
+          </Text>
+        </View>
+
+        <View style={{ marginHorizontal: 20, backgroundColor: "#eef2ff", padding: 10, borderRadius: 10, marginBottom: 10 }}>
+          <Text style={{ color: "#4f46e5", fontSize: 12, textAlign: "center", fontWeight: "600" }}>
+            ℹ️ {userPlan} Plan: Showing journal reports for recent entries only. Upgrade to Pro for unlimited history.
           </Text>
         </View>
 
@@ -469,36 +538,48 @@ export default function JournalEntry({ navigation }) {
             style={[styles.statCardBox, { backgroundColor: darkMode ? "#064e3b" : "#eefbf0" }]}
           >
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <Icon name="trending-up" size={24} color="#16a34a" />
+              <Icon name={isJournalLocked ? "lock" : "trending-up"} size={24} color={isJournalLocked ? "#ef4444" : "#16a34a"} />
               <Icon name="menu-down" size={20} color="#16a34a" />
             </View>
             <Text style={styles.statLabel}>
               {salesView === "Total Sales" ? "Total Sales" : salesView === "Selected Sales" ? "Selected Sales" : "Online Sales"} ▼
             </Text>
-            <Text style={[styles.statAmount, { color: "#16a34a" }]}>
-            {userRole === "employee" ? "🔒 Locked" : `₹${displaySalesVal.toFixed(0)}`}
+            <Text style={[styles.statAmount, { color: isJournalLocked ? "#ef4444" : "#16a34a" }]}>
+            {userRole === "employee" || isJournalLocked ? "🔒 Locked" : `₹${displaySalesVal.toFixed(0)}`}
             </Text>
           </TouchableOpacity>
 
           <View style={[styles.statCardBox, { backgroundColor: darkMode ? "#7f1d1d" : "#fff1f2", marginLeft: 12 }]}>
-            <Icon name="shopping" size={24} color="#ef4444" />
+            <Icon name={isJournalLocked ? "lock" : "shopping"} size={24} color="#ef4444" />
             <Text style={styles.statLabel}>Total Purchase</Text>
             <Text style={[styles.statAmount, { color: "#ef4444" }]}>
-             {userRole === "employee" ? "🔒 Locked" : `₹${filteredPurchase.toFixed(0)}`}
+             {userRole === "employee" || isJournalLocked ? "🔒 Locked" : `₹${filteredPurchase.toFixed(0)}`}
             </Text>
           </View>
         </View>
 
-        <View style={styles.profitCard}>
-          <Text style={{ color: "#e0e7ff", fontSize: 14 }}>Net Profit</Text>
+        <View style={[styles.profitCard, isJournalLocked && { backgroundColor: "#334155" }]}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ color: "#e0e7ff", fontSize: 14 }}>Net Profit</Text>
+            {isJournalLocked && <Icon name="lock" size={20} color="#f59e0b" />}
+          </View>
           <Text style={{ color: "#fff", fontSize: 34, fontWeight: "bold", marginTop: 8 }}>
-           {userRole === "employee" ? "🔒 Locked" : `₹${filteredProfit.toFixed(0)}`}
+           {userRole === "employee" || isJournalLocked ? "🔒 Locked" : `₹${filteredProfit.toFixed(0)}`}
           </Text>
         </View>
 
         <View style={{ flexDirection: "row", paddingHorizontal: 20, marginTop: 12, marginBottom: 24 }}>
-          <TouchableOpacity style={styles.printBtn} onPress={printReport}>
-            <Text style={{ color: "#fff", fontWeight: "700" }}>Print Overall Report</Text>
+          <TouchableOpacity 
+            style={[styles.printBtn, isJournalLocked && { backgroundColor: "#64748b" }]} 
+            onPress={() => {
+              if (isJournalLocked) {
+                Alert.alert("Locked 🔒", "Journal history is locked on your plan after the trial period. Please upgrade to Pro.");
+                return;
+              }
+              printReport();
+            }}
+          >
+            <Text style={{ color: "#fff", fontWeight: "700" }}>{isJournalLocked ? "🔒 Locked Report" : "Print Overall Report"}</Text>
           </TouchableOpacity>
         </View>
 
@@ -513,7 +594,13 @@ export default function JournalEntry({ navigation }) {
             <TouchableOpacity 
               key={item.itemName} 
               activeOpacity={0.7} 
-              onPress={() => handleProductPress(item)} 
+              onPress={() => {
+                if (isJournalLocked) {
+                  Alert.alert("Locked 🔒", "Journal history is locked. Upgrade to Pro for full access.");
+                  return;
+                }
+                handleProductPress(item);
+              }} 
               style={[styles.listItemCard, { backgroundColor: theme.card, borderColor: darkMode ? "#334155" : "#eef2ff" }]}
             >
               <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -521,10 +608,10 @@ export default function JournalEntry({ navigation }) {
                   {item.itemName}
                 </Text>
                 <Text style={styles.purchaseAmountText}>
-                 {userRole === "employee" ? "🔒" : `₹${item.purchaseAmount.toFixed(0)}`}
+                 {userRole === "employee" || isJournalLocked ? "🔒" : `₹${item.purchaseAmount.toFixed(0)}`}
                 </Text>
                 <Text style={styles.salesAmountText}>
-                {userRole === "employee" ? "🔒" : `₹${item.salesAmount.toFixed(0)}`}
+                {userRole === "employee" || isJournalLocked ? "🔒" : `₹${item.salesAmount.toFixed(0)}`}
                </Text>
               </View>
             </TouchableOpacity>
@@ -571,7 +658,7 @@ export default function JournalEntry({ navigation }) {
         <View key={idx} style={[styles.tableRow, { borderColor: darkMode ? "#334155" : "#edf2f7" }]}>
           <View style={{flex: 1.2}}>
             <Text style={[styles.tdBold, { color: theme.text }]}>{p.supplierName}</Text>
-            <Text style={styles.tdSub}>{p.date}</Text>
+            <Text style={{ fontSize: 10, color: "#64748b" }}>{p.date}</Text>
           </View>
           <Text style={[styles.tdText, {flex: 0.6, textAlign: 'center', color: theme.text }]}>₹{p.price.toFixed(0)}</Text>
           <Text style={[styles.tdText, {flex: 0.5, textAlign: 'center', color: theme.text }]}>{p.qty}</Text>
@@ -589,18 +676,18 @@ export default function JournalEntry({ navigation }) {
       <View style={[styles.tableRow, styles.tableHeader, { backgroundColor: darkMode ? "#312e81" : "#eef2ff" }]}>
         <Text style={[styles.thText, {flex: 1.2}]}>Date / Customer</Text>
         <Text style={[styles.thText, {flex: 0.6, textAlign: 'center'}]}>Price</Text>
-        <Text style={[styles.thText, {flex: 0.5, textAlign: 'center'}]}>Sales</Text>
+        <Text style={{flex: 0.5, fontSize: 12, fontWeight: "700", color: "#4f46e5", textAlign: 'center'}}>Sales</Text>
         <Text style={[styles.thText, {flex: 0.5, textAlign: 'right'}]}>Total</Text>
       </View>
       {selectedProduct.salesHistory.map((s, idx) => (
         <View key={idx} style={[styles.tableRow, { borderColor: darkMode ? "#334155" : "#edf2f7" }]}>
           <View style={{flex: 1.2}}>
             <Text style={[styles.tdBold, { color: theme.text }]}>{s.customerName}</Text>
-            <Text style={styles.tdSub}>{s.date} ({s.billNo})</Text>
+            <Text style={{ fontSize: 10, color: "#64748b" }}>{s.date} ({s.billNo})</Text>
           </View>
           <Text style={[styles.tdText, {flex: 0.6, textAlign: 'center', color: theme.text }]}>₹{s.price.toFixed(0)}</Text>
           <Text style={[styles.tdText, {flex: 0.5, textAlign: 'center', color: theme.text }]}>{s.qty}</Text>
-          <Text style={[styles.tdText, {flex: 0.5, textAlign: 'right', color: '#16a34a', fontWeight: '700'}]}>₹{(s.qty * s.price).toFixed(0)}</Text>
+          <Text style={[styles.tdText, {flex: 0.5, textAlign: 'right', color: '#16a341', fontWeight: '700'}]}>₹{(s.qty * s.price).toFixed(0)}</Text>
         </View>
       ))}
     </View>
@@ -637,8 +724,7 @@ const styles = StyleSheet.create({
   statLabel: { marginTop: 10, fontSize: 12, color: "#64748b", fontWeight: "600" },
   statAmount: { fontSize: 24, fontWeight: "bold", marginTop: 5 },
   profitCard: { backgroundColor: "#6366f1", marginHorizontal: 20, marginTop: 18, paddingVertical: 24, paddingHorizontal: 22, borderRadius: 24, shadowColor: "#6366f1", shadowOpacity: .25, shadowRadius: 12, elevation: 8 },
-  printBtn: { flex: 1, backgroundColor: "#16a34a", height: 56, justifyContent: "center", alignItems: "center", borderRadius: 16 },
-  tableHeaderRow: { flexDirection: "row", paddingHorizontal: 20, paddingVertical: 14, marginHorizontal: 20, marginBottom: 10, backgroundColor: "#f3f0ff", borderRadius: 14 },
+  printBtn: { width: "100%", backgroundColor: "#16a34a", height: 56, justifyContent: "center", alignItems: "center", borderRadius: 16 },  tableHeaderRow: { flexDirection: "row", paddingHorizontal: 20, paddingVertical: 14, marginHorizontal: 20, marginBottom: 10, backgroundColor: "#f3f0ff", borderRadius: 14 },
   listItemCard: { backgroundColor: "#fff", borderRadius: 22, borderWidth: 1, borderColor: "#eef2ff", paddingVertical: 20, paddingHorizontal: 20, marginBottom: 14, shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 12, elevation: 5 },
   productNameText: { flex: 2.8, fontSize: 15, fontWeight: "700", color: "#111827", paddingRight: 8 },
   purchaseAmountText: { flex: 1, textAlign: "right", fontSize: 15, fontWeight: "600", color: "#ef4444" },
@@ -656,7 +742,7 @@ const styles = StyleSheet.create({
   historyName: { fontSize: 14, fontWeight: "600", color: "#111827" },
   historyDate: { fontSize: 11, color: "#64748b", marginTop: 2 },
   historyDetails: { fontSize: 14, fontWeight: "600", color: "#ef4444", textAlign: "right" },
-  modalPrintBtn: { backgroundColor: "#6366f1", height: 54, borderRadius: 16, flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 25, marginBottom: 10 },
+  modalPrintBtn: { backgroundColor: "#6366f1", height: 54, borderRadius: 16, flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 25, marginBottom: 10, },
   tableContainer: { backgroundColor: "#f8fafc", borderRadius: 12, padding: 8, marginBottom: 10, borderWidth: 1, borderColor: "#e2e8f0" },
   tableRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderColor: "#edf2f7" },
   tableHeader: { backgroundColor: "#eef2ff", borderRadius: 8, paddingVertical: 6, marginBottom: 4, borderBottomWidth: 0 },

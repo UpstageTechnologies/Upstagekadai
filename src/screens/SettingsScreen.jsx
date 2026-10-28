@@ -6,17 +6,32 @@ import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import ImagePicker from "react-native-image-crop-picker"; 
 import { launchImageLibrary } from "react-native-image-picker";
 import { auth, db } from "../utils/firebaseConfig";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, getDocs } from "firebase/firestore";
 import { useTheme } from "../theme/ThemeContext";
 import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
-import RNBluetoothEscposPrinter from "react-native-thermal-receipt-printer";
+import bluetoothPrinter, {
+  requestBluetoothPermissions,
+  isBluetoothEnabled,
+  openBluetoothSettings,
+  scanPrinters as startPrinterScan,
+  stopDiscovery,
+  connectPrinter,
+  disconnectPrinter as disconnectPrinterDevice,
+  isPrinterConnected,
+  getSavedPrinter,
+  printReceipt,
+  printTestReceipt,
+  printTestLabel,
+  printBarcodeLabel,
+  printBatchLabels,
+} from "../utils/bluetoothPrinter";
 
 export default function SettingsScreen({ navigation }) {
   const { darkMode, toggleTheme, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
 
-  // Active Sub-View State ("main" | "shopInfo" | "taxPricing" | "receipt" | "printer" | "payment" | "appSettings")
+  // Active Sub-View State ("main" | "shopInfo" | "taxPricing" | "receipt" | "printer" | "payment" | "delivery" | "appSettings")
   const [currentView, setCurrentView] = useState("main");
   const [currentMode, setCurrentMode] = useState("local");
 
@@ -46,6 +61,17 @@ export default function SettingsScreen({ navigation }) {
   const [gstNumber, setGstNumber] = useState("");
   const [gstPercentage, setGstPercentage] = useState("18");
 
+  // Delivery & Pickup States
+  const [doorDeliveryEnabled, setDoorDeliveryEnabled] = useState(true);
+  const [storePickupEnabled, setStorePickupEnabled] = useState(true);
+  const [deliveryCharge, setDeliveryCharge] = useState("0");
+  const [freeDeliveryAbove, setFreeDeliveryAbove] = useState("");
+  const [minOrderAmount, setMinOrderAmount] = useState("");
+  const [estimatedDeliveryTime, setEstimatedDeliveryTime] = useState("30-45 mins");
+  const [deliveryRadius, setDeliveryRadius] = useState("");
+  const [pickupEstimatedTime, setPickupEstimatedTime] = useState("15-30 mins");
+  const [deliveryNotes, setDeliveryNotes] = useState("");
+
   // Receipt Settings States
   const [receiptPaperSize, setReceiptPaperSize] = useState("58mm");
   const [receiptStoreLogo, setReceiptStoreLogo] = useState(false);
@@ -57,7 +83,7 @@ export default function SettingsScreen({ navigation }) {
   const [receiptHeader, setReceiptHeader] = useState("");
   const [receiptFooter, setReceiptFooter] = useState("Thank you!");
 
-  // Printer Settings States (As per reference images)
+  // Printer Settings States
   const [printerPaperSize, setPrinterPaperSize] = useState("58mm");
   const [printerAutoReconnect, setPrinterAutoReconnect] = useState(true);
   const [characterEncoding, setCharacterEncoding] = useState("Automatic");
@@ -90,6 +116,23 @@ export default function SettingsScreen({ navigation }) {
   const [cashDisplayName, setCashDisplayName] = useState("");
   const [defaultPayment, setDefaultPayment] = useState("cash");
 
+  // Label Printing & Customization States
+  const [showLabelModal, setShowLabelModal] = useState(false);
+  const [labelTab, setLabelTab] = useState("single"); // "single" | "inventory" | "batch"
+  const [labelProductName, setLabelProductName] = useState("");
+  const [labelBarcode, setLabelBarcode] = useState("");
+  const [labelPrice, setLabelPrice] = useState("");
+  const [labelCopies, setLabelCopies] = useState("1");
+  const [labelPrinting, setLabelPrinting] = useState(false);
+  const [inventoryProducts, setInventoryProducts] = useState([]);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [batchItems, setBatchItems] = useState([]);
+
+  // Copies & Receipt Customization Modals
+  const [showCopiesModal, setShowCopiesModal] = useState(false);
+  const [showCustomizeReceiptModal, setShowCustomizeReceiptModal] = useState(false);
+
   useEffect(() => {
     loadSettingsData();
     const task = InteractionManager.runAfterInteractions(() => {
@@ -98,71 +141,11 @@ export default function SettingsScreen({ navigation }) {
     return () => task.cancel();
   }, []);
 
-  const requestBluetoothPermissions = async () => {
-    if (Platform.OS === "android") {
-      try {
-        if (Platform.Version >= 31) {
-          const res = await PermissionsAndroid.requestMultiple([
-            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          ]);
-
-          const scanGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED;
-          const connectGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
-
-          if (scanGranted && connectGranted) {
-            return true;
-          }
-
-          // Check if user clicked "Never ask again" / permanently denied
-          const scanDenied = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
-          const connectDenied = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
-
-          if (scanDenied || connectDenied) {
-            Alert.alert(
-              "Permission Required",
-              "Nearby devices / Bluetooth permission deny aagirukku. Settings-la poi 'Nearby Devices' allow pannunga.",
-              [
-                { text: "Cancel", style: "cancel" },
-                { text: "Open Settings", onPress: () => Linking.openSettings() }
-              ]
-            );
-          }
-          return false;
-        } else {
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            {
-              title: "Location Permission",
-              message: "Bluetooth devices scan panna Location permission thevaipadu.",
-              buttonNeutral: "Ask Later",
-              buttonNegative: "Cancel",
-              buttonPositive: "OK",
-            }
-          );
-          return granted === PermissionsAndroid.RESULTS.GRANTED;
-        }
-      } catch (err) {
-        console.log("Permission error:", err);
-        return false;
-      }
-    }
-    return true;
-  };
-
   const initBluetoothPrinter = async () => {
     try {
-      await RNBluetoothEscposPrinter.init();
-      const savedPrinter = await AsyncStorage.getItem("connected_printer_device");
-      if (savedPrinter) {
-        const printerObj = JSON.parse(savedPrinter);
-        setConnectedPrinter(printerObj);
-        if (printerAutoReconnect) {
-          RNBluetoothEscposPrinter.connectPrinter(printerObj.inner_mac_address)
-            .then(() => console.log("Printer auto-reconnected successfully"))
-            .catch((e) => console.log("Auto-reconnect error:", e));
-        }
+      const saved = await getSavedPrinter(false);
+      if (saved) {
+        setConnectedPrinter(saved);
       }
     } catch (e) {
       console.log("BLE Init error:", e);
@@ -170,35 +153,87 @@ export default function SettingsScreen({ navigation }) {
   };
 
   const scanPrinters = async () => {
-    const permissionGranted = await requestBluetoothPermissions();
-    if (!permissionGranted) {
-      return;
-    }
     setIsScanning(true);
     setAvailablePrinters([]);
     try {
-      await RNBluetoothEscposPrinter.init();
-      const devices = await RNBluetoothEscposPrinter.getDeviceList();
-      if (Array.isArray(devices)) {
-        setAvailablePrinters(devices);
+      const enabled = await isBluetoothEnabled();
+      if (!enabled) {
+        setIsScanning(false);
+        Alert.alert(
+          "Bluetooth Off",
+          "Bluetooth is turned OFF. Please turn ON Bluetooth to search for thermal printers.",
+          [
+            { text: "Open Settings", onPress: openBluetoothSettings },
+            { text: "Cancel", style: "cancel" }
+          ]
+        );
+        return;
       }
+
+      // 1. Get already paired / bonded devices immediately
+      try {
+        const paired = await bluetoothPrinter.getPairedDevices();
+        if (paired && paired.length > 0) {
+          setAvailablePrinters(paired);
+        }
+      } catch (err) {
+        console.log("Error getting paired devices:", err);
+      }
+
+      // 2. Start live discovery for nearby devices
+      await startPrinterScan((foundDevice) => {
+        if (!foundDevice) return;
+        const mac = foundDevice.inner_mac_address || foundDevice.macAddress;
+        if (!mac) return;
+        setAvailablePrinters((prev) => {
+          const exists = prev.some(
+            (d) => (d.inner_mac_address || d.macAddress) === mac
+          );
+          if (!exists) {
+            return [...prev, foundDevice];
+          }
+          return prev;
+        });
+      });
     } catch (error) {
-      Alert.alert("Scan Error", error.message || "Nearby bluetooth devices scan panna mudiyala.");
+      console.log("Scan error:", error);
+      if (error?.message === "BLUETOOTH_DISABLED") {
+        Alert.alert(
+          "Bluetooth Off",
+          "Bluetooth is turned OFF. Please turn ON Bluetooth to discover printers.",
+          [
+            { text: "Open Settings", onPress: openBluetoothSettings },
+            { text: "Cancel", style: "cancel" }
+          ]
+        );
+      } else {
+        Alert.alert("Scan Error", error.message || "Failed to scan for Bluetooth devices.");
+      }
     } finally {
-      setIsScanning(false);
+      setTimeout(() => {
+        setIsScanning(false);
+      }, 4000);
     }
   };
 
   const connectToPrinter = async (printer) => {
+    const mac = printer.inner_mac_address || printer.macAddress;
+    const name = printer.device_name || printer.deviceName || "Thermal Printer";
     try {
-      setConnectingAddress(printer.inner_mac_address);
-      await RNBluetoothEscposPrinter.connectPrinter(printer.inner_mac_address);
-      setConnectedPrinter(printer);
-      await AsyncStorage.setItem("connected_printer_device", JSON.stringify(printer));
+      setConnectingAddress(mac);
+      const connectedInfo = await connectPrinter(mac, name);
+      setConnectedPrinter(connectedInfo);
       setShowPrinterDiscovery(false);
-      Alert.alert("Connected ✅", `${printer.device_name || "Printer"} connect aaiduchu!`);
+      Alert.alert("Connected ✅", `${name} connect aaiduchu!`);
     } catch (err) {
-      Alert.alert("Error ❌", "Printer connect aagala: " + err.message);
+      Alert.alert(
+        "Connection Failed ❌",
+        `Printer (${name}) connect aagala. Make sure printer is turned ON and paired in phone Bluetooth settings.\n\nError: ${err.message}`,
+        [
+          { text: "Open Bluetooth Settings", onPress: openBluetoothSettings },
+          { text: "OK", style: "cancel" }
+        ]
+      );
     } finally {
       setConnectingAddress(null);
     }
@@ -206,13 +241,165 @@ export default function SettingsScreen({ navigation }) {
 
   const disconnectPrinter = async () => {
     try {
-      await RNBluetoothEscposPrinter.closeConn();
-      await AsyncStorage.removeItem("connected_printer_device");
-      setConnectedPrinter(null);
-      Alert.alert("Disconnected", "Printer disconnect aaiduchu.");
+      await disconnectPrinterDevice();
     } catch (e) {
       console.log("Disconnect error:", e);
+    } finally {
+      setConnectedPrinter(null);
+      Alert.alert("Disconnected", "Printer disconnect aaiduchu.");
     }
+  };
+
+  const handleTestPrintReceipt = async () => {
+    try {
+      if (!connectedPrinter) {
+        Alert.alert("No Printer", "First connect a Bluetooth printer to test print.");
+        return;
+      }
+      setLoading(true);
+      await printTestReceipt({
+        shopName: shopName || "MY SHOP",
+        address: address || "",
+        phone: phone || "",
+        gstNumber: gstEnabled ? gstNumber : "",
+        header: receiptHeader || "--- TEST RECEIPT ---",
+        footer: receiptFooter || "Thank you for shopping with us!",
+        paperSize: printerPaperSize || receiptPaperSize || "58mm",
+      });
+      Alert.alert("Success ✅", "Test receipt printed successfully!");
+    } catch (err) {
+      Alert.alert("Print Error ❌", "Test receipt print panna mudiyala: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTestPrintLabel = async () => {
+    try {
+      if (!connectedPrinter) {
+        Alert.alert("No Printer", "First connect a Bluetooth printer to test print.");
+        return;
+      }
+      setLoading(true);
+      await printBarcodeLabel({
+        shopName: shopName || "MY SHOP",
+        itemName: "Demo Barcode Product",
+        price: 99,
+        barcode: "8901030383921",
+        copies: 1,
+        paperSize: printerPaperSize || "58mm",
+        feedLines: parseInt(paperFeedAmount, 10) || 3,
+      });
+      Alert.alert("Success ✅", "Test label printed successfully!");
+    } catch (err) {
+      Alert.alert("Print Error ❌", "Test label print panna mudiyala: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadInventoryProducts = async () => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      setInventoryLoading(true);
+      const colName = currentMode === "global" ? "global_inventory" : "inventory";
+      const snap = await getDocs(collection(db, "users", user.uid, colName));
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setInventoryProducts(list);
+    } catch (e) {
+      console.log("Error loading inventory for labels:", e);
+    } finally {
+      setInventoryLoading(false);
+    }
+  };
+
+  const handlePrintSingleLabel = async () => {
+    if (!connectedPrinter) {
+      Alert.alert("No Printer", "First connect a Bluetooth printer to print labels.");
+      return;
+    }
+    if (!labelProductName.trim()) {
+      Alert.alert("Missing Name", "Please enter a product name.");
+      return;
+    }
+    const bCode = labelBarcode.trim() || String(Date.now()).slice(-8);
+    const copiesCount = parseInt(labelCopies, 10) || 1;
+
+    try {
+      setLabelPrinting(true);
+      await printBarcodeLabel({
+        shopName: shopName || "MY SHOP",
+        itemName: labelProductName.trim(),
+        barcode: bCode,
+        price: parseFloat(labelPrice) || 0,
+        copies: copiesCount,
+        paperSize: printerPaperSize || "58mm",
+        feedLines: parseInt(paperFeedAmount, 10) || 3,
+      });
+      Alert.alert("Success ✅", `${copiesCount} label(s) printed successfully!`);
+    } catch (err) {
+      Alert.alert("Print Error ❌", "Label print panna mudiyala: " + err.message);
+    } finally {
+      setLabelPrinting(false);
+    }
+  };
+
+  const handlePrintBatchLabels = async () => {
+    if (!connectedPrinter) {
+      Alert.alert("No Printer", "First connect a Bluetooth printer to print labels.");
+      return;
+    }
+    if (batchItems.length === 0) {
+      Alert.alert("No Items", "Add at least one product to the batch list.");
+      return;
+    }
+
+    try {
+      setLabelPrinting(true);
+      for (const item of batchItems) {
+        await printBarcodeLabel({
+          shopName: shopName || "MY SHOP",
+          itemName: item.itemName,
+          barcode: item.barcode,
+          price: item.price,
+          copies: item.copies || 1,
+          paperSize: printerPaperSize || "58mm",
+          feedLines: parseInt(paperFeedAmount, 10) || 3,
+        });
+      }
+      Alert.alert("Success ✅", "All batch labels printed successfully!");
+      setBatchItems([]);
+    } catch (err) {
+      Alert.alert("Batch Print Error ❌", err.message);
+    } finally {
+      setLabelPrinting(false);
+    }
+  };
+
+  const addToBatch = (item) => {
+    const itemBarcode = item.barcode || item.id || String(Date.now()).slice(-8);
+    const itemName = item.itemName || item.name || "Product";
+    const itemPrice = Number(item.salesPrice || item.price || 0);
+
+    setBatchItems(prev => {
+      const exists = prev.find(i => i.barcode === itemBarcode);
+      if (exists) {
+        return prev.map(i => i.barcode === itemBarcode ? { ...i, copies: (i.copies || 1) + 1 } : i);
+      }
+      return [...prev, {
+        itemName,
+        barcode: itemBarcode,
+        price: itemPrice,
+        copies: 1,
+      }];
+    });
+    Alert.alert("Added to Batch ✅", `${itemName} added.`);
+  };
+
+  const generateRandomBarcode = () => {
+    const code = "890" + Math.floor(1000000000 + Math.random() * 9000000000);
+    setLabelBarcode(code);
   };
 
   const loadSettingsData = async () => {
@@ -239,7 +426,7 @@ export default function SettingsScreen({ navigation }) {
           setCustomShopUid(data.customShopUid || "Not Generated / Expired");
 
           setRazorpayMobile(data.razorpayMobile || "");
-          setUpiMobile(data.upiMobile || "");
+          setUpiMobile(data.upiMobile || ""); 
           setUpiId(data.upiId || "");
           setRazorpayKeyId(data.razorpayKeyId || ""); 
           setRazorpaySecret(data.razorpaySecret || ""); 
@@ -256,6 +443,21 @@ export default function SettingsScreen({ navigation }) {
           setGstBusinessName(data.gstBusinessName || "");
           setGstNumber(data.gstNumber || "");
           setGstPercentage(data.gstPercentage || "18");
+
+          // Load Delivery & Pickup Config
+          if (data.deliveryConfig) {
+            setDoorDeliveryEnabled(data.deliveryConfig.doorDeliveryEnabled ?? true);
+            setStorePickupEnabled(data.deliveryConfig.storePickupEnabled ?? true);
+            setDeliveryCharge(data.deliveryConfig.deliveryCharge !== undefined ? String(data.deliveryConfig.deliveryCharge) : "0");
+            setFreeDeliveryAbove(data.deliveryConfig.freeDeliveryAbove ? String(data.deliveryConfig.freeDeliveryAbove) : "");
+            setMinOrderAmount(data.deliveryConfig.minOrderAmount ? String(data.deliveryConfig.minOrderAmount) : "");
+            setEstimatedDeliveryTime(data.deliveryConfig.estimatedDeliveryTime || "30-45 mins");
+            setDeliveryRadius(data.deliveryConfig.deliveryRadius ? String(data.deliveryConfig.deliveryRadius) : "");
+            setPickupEstimatedTime(data.deliveryConfig.pickupEstimatedTime || "15-30 mins");
+            setDeliveryNotes(data.deliveryConfig.deliveryNotes || "");
+          } else if (data.doorDeliveryEnabled !== undefined) {
+            setDoorDeliveryEnabled(data.doorDeliveryEnabled);
+          }
 
           if (data.receiptConfig) {
             setReceiptStoreLogo(data.receiptConfig.storeLogo ?? false);
@@ -322,6 +524,21 @@ export default function SettingsScreen({ navigation }) {
         gstNumber: gstNumber.trim(),
         gstPercentage: gstPercentage.trim(),
 
+        // Delivery Config Save
+        doorDeliveryEnabled,
+        storePickupEnabled,
+        deliveryConfig: {
+          doorDeliveryEnabled,
+          storePickupEnabled,
+          deliveryCharge: deliveryCharge.trim(),
+          freeDeliveryAbove: freeDeliveryAbove.trim(),
+          minOrderAmount: minOrderAmount.trim(),
+          estimatedDeliveryTime: estimatedDeliveryTime.trim(),
+          deliveryRadius: deliveryRadius.trim(),
+          pickupEstimatedTime: pickupEstimatedTime.trim(),
+          deliveryNotes: deliveryNotes.trim(),
+        },
+
         receiptConfig: {
           paperSize: receiptPaperSize,
           storeLogo: receiptStoreLogo,
@@ -377,9 +594,12 @@ export default function SettingsScreen({ navigation }) {
   const handleEmail = () => Linking.openURL(`mailto:upstagetechnologies@gmail.com`);
   const handleWhatsApp = () => Linking.openURL(`whatsapp://send?phone=919442461428`);
 
-  const filteredPrinterList = availablePrinters.filter(item => 
-    (item.device_name || "").toLowerCase().includes(printerSearchText.toLowerCase())
-  );
+  const filteredPrinterList = availablePrinters.filter(item => {
+    const query = printerSearchText.toLowerCase();
+    const name = (item.device_name || item.deviceName || "").toLowerCase();
+    const mac = (item.inner_mac_address || item.macAddress || "").toLowerCase();
+    return name.includes(query) || mac.includes(query);
+  });
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background, paddingTop: insets.top }]}>
@@ -400,6 +620,7 @@ export default function SettingsScreen({ navigation }) {
           {currentView === "receipt" && "Receipt Settings"}
           {currentView === "printer" && "Printer Settings"}
           {currentView === "payment" && "Payment Methods"}
+          {currentView === "delivery" && "Delivery & Pickup"}
           {currentView === "appSettings" && "App Settings"}
         </Text>
       </View>
@@ -472,6 +693,21 @@ export default function SettingsScreen({ navigation }) {
               <View style={styles.menuTextContainer}>
                 <Text style={[styles.menuTitle, { color: theme.text }]}>Payment Methods</Text>
                 <Text style={styles.menuSubtitle}>Cash, card, transfer and QR Pay</Text>
+              </View>
+              <Icon name="chevron-right" size={22} color="#94a3b8" />
+            </TouchableOpacity>
+            <View style={styles.menuDivider} />
+
+            {/* Delivery & Pickup Settings */}
+            <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView("delivery")}>
+              <View style={[styles.menuIconContainer, { backgroundColor: "#fff7ed" }]}>
+                <Icon name="moped" size={22} color="#ea580c" />
+              </View>
+              <View style={styles.menuTextContainer}>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>Delivery & Pickup</Text>
+                <Text style={styles.menuSubtitle}>
+                  {doorDeliveryEnabled ? "Door Delivery Available • In-Shop Pickup" : "Delivery Not Available • Pickup Only"}
+                </Text>
               </View>
               <Icon name="chevron-right" size={22} color="#94a3b8" />
             </TouchableOpacity>
@@ -672,16 +908,36 @@ export default function SettingsScreen({ navigation }) {
                 <Icon name={connectedPrinter ? "printer-check" : "printer-off"} size={24} color={connectedPrinter ? "#16a34a" : "#64748b"} />
               </View>
               <Text style={[styles.menuTitle, { color: theme.text }]}>
-                {connectedPrinter ? connectedPrinter.device_name || "Thermal Printer" : "Connect a printer"}
+                {connectedPrinter ? connectedPrinter.device_name || connectedPrinter.deviceName || "Thermal Printer" : "Connect a printer"}
               </Text>
               <Text style={[styles.menuSubtitle, { textAlign: "center", marginBottom: 15 }]}>
-                {connectedPrinter ? `Address: ${connectedPrinter.inner_mac_address}` : "Print receipts directly from app."}
+                {connectedPrinter ? `Address: ${connectedPrinter.inner_mac_address || connectedPrinter.macAddress}` : "Print receipts & barcode labels directly from app."}
               </Text>
               {connectedPrinter ? (
-                <TouchableOpacity style={[styles.findPrinterBtn, { backgroundColor: "#ef4444" }]} onPress={disconnectPrinter}>
-                  <Icon name="link-variant-off" size={18} color="#fff" style={{ marginRight: 6 }} />
-                  <Text style={{ color: "#fff", fontWeight: "700" }}>Disconnect</Text>
-                </TouchableOpacity>
+                <View style={{ width: "100%", alignItems: "center" }}>
+                  <View style={{ flexDirection: "row", gap: 10, marginBottom: 12, flexWrap: "wrap", justifyContent: "center" }}>
+                    <TouchableOpacity
+                      style={[styles.findPrinterBtn, { backgroundColor: "#3b82f6", paddingHorizontal: 16 }]}
+                      onPress={handleTestPrintReceipt}
+                    >
+                      <Icon name="receipt" size={16} color="#fff" style={{ marginRight: 6 }} />
+                      <Text style={{ color: "#fff", fontWeight: "700" }}>Test Receipt</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.findPrinterBtn, { backgroundColor: "#8b5cf6", paddingHorizontal: 16 }]}
+                      onPress={handleTestPrintLabel}
+                    >
+                      <Icon name="barcode" size={16} color="#fff" style={{ marginRight: 6 }} />
+                      <Text style={{ color: "#fff", fontWeight: "700" }}>Test Label</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <TouchableOpacity style={[styles.findPrinterBtn, { backgroundColor: "#ef4444" }]} onPress={disconnectPrinter}>
+                    <Icon name="link-variant-off" size={18} color="#fff" style={{ marginRight: 6 }} />
+                    <Text style={{ color: "#fff", fontWeight: "700" }}>Disconnect</Text>
+                  </TouchableOpacity>
+                </View>
               ) : (
                 <TouchableOpacity style={styles.findPrinterBtn} onPress={() => { setShowPrinterDiscovery(true); scanPrinters(); }}>
                   <Icon name="bluetooth" size={18} color="#fff" style={{ marginRight: 6 }} />
@@ -788,25 +1044,25 @@ export default function SettingsScreen({ navigation }) {
               </View>
               <View style={styles.menuDivider} />
 
-              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 10 }]} onPress={() => Alert.alert("Copies", "Multiple receipt copies configuration.")}>
+              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 10 }]} onPress={() => setShowCopiesModal(true)}>
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <Text style={[styles.menuTitle, { color: theme.text }]}>Multiple receipt copies</Text>
                     <View style={styles.proBadge}><Text style={styles.proBadgeText}>Included in Pro</Text></View>
                   </View>
-                  <Text style={styles.menuSubtitle}>Print more than one copy per print action • {multipleReceiptCopies}</Text>
+                  <Text style={styles.menuSubtitle}>Print more than one copy per print action • {multipleReceiptCopies} {multipleReceiptCopies === "1" ? "copy" : "copies"}</Text>
                 </View>
                 <Icon name="chevron-right" size={20} color="#94a3b8" />
               </TouchableOpacity>
               <View style={styles.menuDivider} />
 
-              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 10 }]} onPress={() => Alert.alert("Customize", "Customize receipt style options.")}>
+              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 10 }]} onPress={() => setShowCustomizeReceiptModal(true)}>
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <Text style={[styles.menuTitle, { color: theme.text }]}>Customize receipt</Text>
                     <View style={styles.proBadge}><Text style={styles.proBadgeText}>Included in Pro</Text></View>
                   </View>
-                  <Text style={styles.menuSubtitle}>Choose style and add custom receipt text</Text>
+                  <Text style={styles.menuSubtitle}>Choose style, header, footer, QR and logo</Text>
                 </View>
                 <Icon name="chevron-right" size={20} color="#94a3b8" />
               </TouchableOpacity>
@@ -815,30 +1071,39 @@ export default function SettingsScreen({ navigation }) {
             {/* Label Printing Section */}
             <Text style={styles.sectionHeading}>Label printing</Text>
             <View style={[styles.subPaymentCard, { backgroundColor: theme.card }]}>
-              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={() => Alert.alert("Price Labels", "Navigate to Price Labels generator.")}>
+              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={() => { setLabelTab("single"); setShowLabelModal(true); }}>
                 <View>
                   <Text style={[styles.menuTitle, { color: theme.text }]}>Price Labels</Text>
-                  <Text style={styles.menuSubtitle}>Create QR labels, barcode labels and price tags</Text>
+                  <Text style={styles.menuSubtitle}>Create custom price tags with barcode & MRP</Text>
                 </View>
                 <Icon name="chevron-right" size={20} color="#94a3b8" />
               </TouchableOpacity>
               <View style={styles.menuDivider} />
 
-              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={() => Alert.alert("Product Labels", "Navigate to Product Labels generator.")}>
+              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={() => { setLabelTab("inventory"); setShowLabelModal(true); loadInventoryProducts(); }}>
                 <View>
                   <Text style={[styles.menuTitle, { color: theme.text }]}>Product Labels</Text>
-                  <Text style={styles.menuSubtitle}>Create QR labels, barcode labels and price tags</Text>
+                  <Text style={styles.menuSubtitle}>Pick product from inventory to print barcode label</Text>
                 </View>
                 <Icon name="chevron-right" size={20} color="#94a3b8" />
               </TouchableOpacity>
               <View style={styles.menuDivider} />
 
-              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={() => Alert.alert("Batch Printing", "Navigate to Batch Printing.")}>
+              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={() => { setLabelTab("batch"); setShowLabelModal(true); loadInventoryProducts(); }}>
                 <View>
                   <Text style={[styles.menuTitle, { color: theme.text }]}>Batch Printing</Text>
-                  <Text style={styles.menuSubtitle}>Create QR labels, barcode labels and price tags</Text>
+                  <Text style={styles.menuSubtitle}>Print multiple barcode labels in a single batch</Text>
                 </View>
                 <Icon name="chevron-right" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+              <View style={styles.menuDivider} />
+
+              <TouchableOpacity style={[styles.subConfigHeader, { paddingVertical: 8 }]} onPress={handleTestPrintLabel}>
+                <View>
+                  <Text style={[styles.menuTitle, { color: "#8b5cf6" }]}>Test Barcode Label Print</Text>
+                  <Text style={styles.menuSubtitle}>Print a sample barcode price label to test alignment</Text>
+                </View>
+                <Icon name="printer" size={20} color="#8b5cf6" />
               </TouchableOpacity>
             </View>
 
@@ -1007,7 +1272,232 @@ export default function SettingsScreen({ navigation }) {
           </View>
         )}
 
-        {/* 6. APP SETTINGS SCREEN */}
+        {/* 6. DELIVERY & PICKUP SETTINGS SCREEN */}
+        {currentView === "delivery" && (
+          <View>
+            {/* Status Banner */}
+            <View style={[styles.statusBanner, { 
+              backgroundColor: doorDeliveryEnabled ? "#ecfdf5" : "#fffbeb", 
+              borderColor: doorDeliveryEnabled ? "#10b981" : "#f59e0b" 
+            }]}>
+              <Icon 
+                name={doorDeliveryEnabled ? "truck-fast" : "store-clock"} 
+                size={22} 
+                color={doorDeliveryEnabled ? "#10b981" : "#d97706"} 
+              />
+              <View style={{ marginLeft: 10, flex: 1 }}>
+                <Text style={{ fontWeight: "700", color: doorDeliveryEnabled ? "#047857" : "#b45309", fontSize: 14 }}>
+                  {doorDeliveryEnabled ? "Door Delivery is Active" : "Store Pickup Only (No Delivery)"}
+                </Text>
+                <Text style={{ fontSize: 12, color: doorDeliveryEnabled ? "#065f46" : "#92400e", marginTop: 2 }}>
+                  {doorDeliveryEnabled 
+                    ? "Customers can choose Home Delivery or Store Pickup." 
+                    : "Door delivery is disabled. Customers will pick up orders in-store."}
+                </Text>
+              </View>
+            </View>
+
+            {/* Delivery Availability Mode Selection */}
+            <Text style={styles.sectionHeading}>Delivery Mode</Text>
+            
+            {/* Option 1: Door Delivery Available */}
+            <TouchableOpacity 
+              activeOpacity={0.8}
+              style={[
+                styles.deliveryModeCard, 
+                { backgroundColor: theme.card, borderColor: doorDeliveryEnabled ? "#10b981" : "rgba(0,0,0,0.08)", borderWidth: doorDeliveryEnabled ? 2 : 1 }
+              ]}
+              onPress={() => setDoorDeliveryEnabled(true)}
+            >
+              <View style={styles.deliveryModeHeader}>
+                <View style={[styles.paymentIconBg, { backgroundColor: "#dcfce7" }]}>
+                  <Icon name="moped" size={24} color="#16a34a" />
+                </View>
+                <View style={{ flex: 1, marginLeft: 10, marginRight: 8 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 2 }}>
+                    <Text style={[styles.menuTitle, { color: theme.text, fontSize: 15 }]}>Door Delivery Available</Text>
+                    {doorDeliveryEnabled && (
+                      <View style={[styles.modeBadge, { backgroundColor: "#dcfce7" }]}>
+                        <Text style={[styles.modeBadgeText, { color: "#15803d" }]}>SELECTED</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.menuSubtitle}>Deliver orders directly to customer's location & store pickup</Text>
+                </View>
+                <Icon 
+                  name={doorDeliveryEnabled ? "radiobox-marked" : "radiobox-blank"} 
+                  size={24} 
+                  color={doorDeliveryEnabled ? "#10b981" : "#94a3b8"} 
+                />
+              </View>
+            </TouchableOpacity>
+
+            {/* Option 2: Store Pickup Only */}
+            <TouchableOpacity 
+              activeOpacity={0.8}
+              style={[
+                styles.deliveryModeCard, 
+                { backgroundColor: theme.card, borderColor: !doorDeliveryEnabled ? "#f59e0b" : "rgba(0,0,0,0.08)", borderWidth: !doorDeliveryEnabled ? 2 : 1 }
+              ]}
+              onPress={() => setDoorDeliveryEnabled(false)}
+            >
+              <View style={styles.deliveryModeHeader}>
+                <View style={[styles.paymentIconBg, { backgroundColor: "#fef3c7" }]}>
+                  <Icon name="storefront-outline" size={24} color="#d97706" />
+                </View>
+                <View style={{ flex: 1, marginLeft: 10, marginRight: 8 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 2 }}>
+                    <Text style={[styles.menuTitle, { color: theme.text, fontSize: 15 }]}>Store Pickup Only</Text>
+                    {!doorDeliveryEnabled && (
+                      <View style={[styles.modeBadge, { backgroundColor: "#fef3c7" }]}>
+                        <Text style={[styles.modeBadgeText, { color: "#b45309" }]}>SELECTED</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.menuSubtitle}>Door delivery not available. Customers must collect orders on-shop</Text>
+                </View>
+                <Icon 
+                  name={!doorDeliveryEnabled ? "radiobox-marked" : "radiobox-blank"} 
+                  size={24} 
+                  color={!doorDeliveryEnabled ? "#f59e0b" : "#94a3b8"} 
+                />
+              </View>
+            </TouchableOpacity>
+
+            {/* DOOR DELIVERY CONFIGURATION */}
+            {doorDeliveryEnabled && (
+              <View style={{ marginTop: 10 }}>
+                <Text style={styles.sectionHeading}>Delivery Fee & Limits</Text>
+                <View style={[styles.subPaymentCard, { backgroundColor: theme.card }]}>
+                  
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Standard Delivery Fee (₹)</Text>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} 
+                    placeholder="0 for Free Delivery" 
+                    placeholderTextColor="#94a3b8" 
+                    keyboardType="numeric"
+                    value={deliveryCharge} 
+                    onChangeText={setDeliveryCharge} 
+                  />
+
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Free Delivery on Orders Above (₹) (Optional)</Text>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} 
+                    placeholder="e.g. 499 (Leave blank for none)" 
+                    placeholderTextColor="#94a3b8" 
+                    keyboardType="numeric"
+                    value={freeDeliveryAbove} 
+                    onChangeText={setFreeDeliveryAbove} 
+                  />
+
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Minimum Order Amount for Delivery (₹)</Text>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} 
+                    placeholder="e.g. 150" 
+                    placeholderTextColor="#94a3b8" 
+                    keyboardType="numeric"
+                    value={minOrderAmount} 
+                    onChangeText={setMinOrderAmount} 
+                  />
+
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Delivery Radius / Range</Text>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} 
+                    placeholder="e.g. 5 km or City-wide" 
+                    placeholderTextColor="#94a3b8" 
+                    value={deliveryRadius} 
+                    onChangeText={setDeliveryRadius} 
+                  />
+
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Estimated Delivery Time</Text>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                    {["30-45 mins", "45-60 mins", "1-2 Hours", "Same Day"].map(time => (
+                      <TouchableOpacity 
+                        key={time} 
+                        onPress={() => setEstimatedDeliveryTime(time)} 
+                        style={[styles.quickChip, estimatedDeliveryTime === time && styles.quickChipActive]}
+                      >
+                        <Text style={[styles.quickChipText, estimatedDeliveryTime === time && { color: "#16a34a" }]}>{time}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} 
+                    placeholder="Custom Delivery Time (e.g. 30-45 mins)" 
+                    placeholderTextColor="#94a3b8" 
+                    value={estimatedDeliveryTime} 
+                    onChangeText={setEstimatedDeliveryTime} 
+                  />
+
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Customer Delivery Note</Text>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text, height: 70, textAlignVertical: "top", paddingTop: 10 }]} 
+                    placeholder="e.g. Deliveries handled between 10 AM to 8 PM" 
+                    placeholderTextColor="#94a3b8" 
+                    multiline
+                    value={deliveryNotes} 
+                    onChangeText={setDeliveryNotes} 
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* STORE / IN-SHOP PICKUP CONFIGURATION */}
+            <Text style={styles.sectionHeading}>In-Shop Pickup Settings</Text>
+            <View style={[styles.subPaymentCard, { backgroundColor: theme.card }]}>
+              <View style={styles.subConfigHeader}>
+                <View>
+                  <Text style={[styles.menuTitle, { color: theme.text }]}>Enable Store Pickup</Text>
+                  <Text style={styles.menuSubtitle}>Allow customers to collect orders at the shop</Text>
+                </View>
+                <Switch 
+                  value={storePickupEnabled} 
+                  onValueChange={(val) => {
+                    if (!val && !doorDeliveryEnabled) {
+                      Alert.alert(
+                        "Pickup Required",
+                        "Door delivery is currently turned off. Store pickup must stay enabled so customers can place orders."
+                      );
+                      return;
+                    }
+                    setStorePickupEnabled(val);
+                  }} 
+                  trackColor={{ false: "#e2e8f0", true: "#10b981" }} 
+                />
+              </View>
+
+              {storePickupEnabled && (
+                <View style={{ marginTop: 10 }}>
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Ready for Pickup Time</Text>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                    {["15-20 mins", "15-30 mins", "30-45 mins", "1 Hour"].map(time => (
+                      <TouchableOpacity 
+                        key={time} 
+                        onPress={() => setPickupEstimatedTime(time)} 
+                        style={[styles.quickChip, pickupEstimatedTime === time && styles.quickChipActive]}
+                      >
+                        <Text style={[styles.quickChipText, pickupEstimatedTime === time && { color: "#16a34a" }]}>{time}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <TextInput 
+                    style={[styles.input, { backgroundColor: theme.background, color: theme.text }]} 
+                    placeholder="e.g. 15-30 mins" 
+                    placeholderTextColor="#94a3b8" 
+                    value={pickupEstimatedTime} 
+                    onChangeText={setPickupEstimatedTime} 
+                  />
+                </View>
+              )}
+            </View>
+
+            <TouchableOpacity style={styles.saveActionBtn} onPress={handleSaveSettings}>
+              <Text style={styles.saveActionText}>{loading ? "Saving..." : "Save Delivery Settings"}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* 7. APP SETTINGS SCREEN */}
         {currentView === "appSettings" && (
           <View style={[styles.menuContainer, { backgroundColor: theme.card }]}>
             <View style={styles.menuItem}>
@@ -1072,62 +1562,101 @@ export default function SettingsScreen({ navigation }) {
       {/* PRINTER DISCOVERY MODAL */}
       <Modal visible={showPrinterDiscovery} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.card, maxHeight: "80%" }]}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card, maxHeight: "85%" }]}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 }}>
-              <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 0 }]}>Printer Discovery</Text>
-              <TouchableOpacity onPress={scanPrinters} disabled={isScanning}>
+              <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 0 }]}>Bluetooth Printers</Text>
+              <TouchableOpacity onPress={scanPrinters} disabled={isScanning} style={{ padding: 6 }}>
                 <Icon name="refresh" size={22} color={isScanning ? "#94a3b8" : "#10b981"} />
               </TouchableOpacity>
             </View>
 
             <TextInput 
               style={[styles.input, { backgroundColor: theme.background, color: theme.text, marginBottom: 10 }]} 
-              placeholder="Search printer..." 
+              placeholder="Search printer name or MAC..." 
               placeholderTextColor="#94a3b8" 
               value={printerSearchText}
               onChangeText={setPrinterSearchText}
             />
 
-            {isScanning ? (
-              <View style={{ paddingVertical: 20, alignItems: "center" }}>
-                <ActivityIndicator size="large" color="#10b981" />
-                <Text style={[styles.menuSubtitle, { marginTop: 10, textAlign: "center" }]}>Searching for nearby bluetooth printers...</Text>
+            {isScanning && (
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 8, gap: 8 }}>
+                <ActivityIndicator size="small" color="#10b981" />
+                <Text style={{ color: "#10b981", fontSize: 13, fontWeight: "600" }}>Searching for nearby Bluetooth devices...</Text>
               </View>
-            ) : (
-              <FlatList
-                data={filteredPrinterList}
-                keyExtractor={(item) => item.inner_mac_address}
-                ListEmptyComponent={
-                  <Text style={[styles.menuSubtitle, { marginVertical: 15, textAlign: "center" }]}>
-                    No bluetooth printers found. Turn ON bluetooth and scan again.
-                  </Text>
-                }
-                renderItem={({ item }) => (
+            )}
+
+            <FlatList
+              data={filteredPrinterList}
+              keyExtractor={(item, index) => item.inner_mac_address || item.macAddress || index.toString()}
+              ListEmptyComponent={
+                !isScanning ? (
+                  <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                    <Icon name="bluetooth-off" size={40} color="#94a3b8" style={{ marginBottom: 8 }} />
+                    <Text style={[styles.menuSubtitle, { marginVertical: 8, textAlign: "center" }]}>
+                      No Bluetooth printers found. Make sure printer is turned ON.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.findPrinterBtn, { backgroundColor: "#3b82f6", marginTop: 8 }]}
+                      onPress={openBluetoothSettings}
+                    >
+                      <Icon name="cog" size={16} color="#fff" style={{ marginRight: 6 }} />
+                      <Text style={{ color: "#fff", fontWeight: "700" }}>Pair in Phone Settings</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null
+              }
+              renderItem={({ item }) => {
+                const mac = item.inner_mac_address || item.macAddress;
+                const name = item.device_name || item.deviceName || "Unknown Printer";
+                const isConnecting = connectingAddress === mac;
+                const isBonded = item.isBonded;
+
+                return (
                   <TouchableOpacity
-                    style={{ flexDirection: "row", alignItems: "center", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "rgba(0,0,0,0.06)" }}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      paddingVertical: 12,
+                      paddingHorizontal: 8,
+                      borderBottomWidth: 1,
+                      borderBottomColor: "rgba(0,0,0,0.06)",
+                    }}
                     onPress={() => connectToPrinter(item)}
-                    disabled={connectingAddress === item.inner_mac_address}
+                    disabled={isConnecting}
                   >
-                    <Icon name="printer" size={22} color="#10b981" style={{ marginRight: 12 }} />
+                    <Icon name="printer" size={24} color="#10b981" style={{ marginRight: 12 }} />
                     <View style={{ flex: 1 }}>
-                      <Text style={[styles.menuTitle, { color: theme.text, fontSize: 15 }]}>
-                        {item.device_name || "Unknown Printer"}
-                      </Text>
-                      <Text style={styles.menuSubtitle}>{item.inner_mac_address}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={[styles.menuTitle, { color: theme.text, fontSize: 15 }]}>
+                          {name}
+                        </Text>
+                        {isBonded && (
+                          <View style={{ backgroundColor: "#dbeafe", paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6 }}>
+                            <Text style={{ color: "#1e40af", fontSize: 10, fontWeight: "700" }}>PAIRED</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.menuSubtitle}>{mac}</Text>
                     </View>
-                    {connectingAddress === item.inner_mac_address ? (
+                    {isConnecting ? (
                       <ActivityIndicator size="small" color="#10b981" />
                     ) : (
                       <Icon name="link-variant" size={20} color="#94a3b8" />
                     )}
                   </TouchableOpacity>
-                )}
-              />
-            )}
+                );
+              }}
+            />
 
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowPrinterDiscovery(false)}>
-              <Text style={{ color: "#ef4444", fontWeight: "700" }}>Cancel</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 15 }}>
+              <TouchableOpacity onPress={openBluetoothSettings} style={{ flexDirection: "row", alignItems: "center" }}>
+                <Icon name="cog" size={16} color="#6366f1" style={{ marginRight: 4 }} />
+                <Text style={{ color: "#6366f1", fontWeight: "600", fontSize: 13 }}>Phone Settings</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowPrinterDiscovery(false)}>
+                <Text style={{ color: "#ef4444", fontWeight: "700" }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1157,6 +1686,458 @@ export default function SettingsScreen({ navigation }) {
             <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowAboutModal(false)}>
               <Text style={{ color: "#6366f1", fontWeight: "700" }}>Close</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MULTIPLE COPIES MODAL */}
+      <Modal visible={showCopiesModal} transparent={true} animationType="fade" onRequestClose={() => setShowCopiesModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>Receipt Copies</Text>
+            <Text style={[styles.menuSubtitle, { textAlign: "center", marginBottom: 15 }]}>
+              Select how many receipt copies to print per checkout
+            </Text>
+
+            {[
+              { val: "1", title: "1 Copy", sub: "Standard customer receipt" },
+              { val: "2", title: "2 Copies", sub: "Customer copy + Store copy" },
+              { val: "3", title: "3 Copies", sub: "Customer + Store + Kitchen/Storage" },
+            ].map(item => (
+              <TouchableOpacity
+                key={item.val}
+                style={[
+                  styles.modalOption,
+                  multipleReceiptCopies === item.val && { backgroundColor: darkMode ? "#1e293b" : "#f0fdf4", borderColor: "#10b981", borderWidth: 1, borderRadius: 12, paddingHorizontal: 12 }
+                ]}
+                onPress={async () => {
+                  setMultipleReceiptCopies(item.val);
+                  setShowCopiesModal(false);
+                  try {
+                    const user = auth.currentUser;
+                    if (user) {
+                      await updateDoc(doc(db, "users", user.uid), { "printerConfig.copies": item.val });
+                    }
+                  } catch (_) {}
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.menuTitle, { color: theme.text }]}>{item.title}</Text>
+                  <Text style={styles.menuSubtitle}>{item.sub}</Text>
+                </View>
+                {multipleReceiptCopies === item.val && (
+                  <Icon name="check-circle" size={22} color="#10b981" />
+                )}
+              </TouchableOpacity>
+            ))}
+
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowCopiesModal(false)}>
+              <Text style={{ color: "#64748b", fontWeight: "700" }}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* CUSTOMIZE RECEIPT MODAL */}
+      <Modal visible={showCustomizeReceiptModal} transparent={true} animationType="slide" onRequestClose={() => setShowCustomizeReceiptModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card, maxHeight: "90%", width: "90%" }]}>
+            <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 12 }]}>Customize Receipt Style</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              
+              <Text style={[styles.inputLabel, { color: theme.text }]}>Custom Header Message</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: theme.background, color: theme.text }]}
+                placeholder="e.g. WELCOME TO OUR SHOP"
+                placeholderTextColor="#94a3b8"
+                value={receiptHeader}
+                onChangeText={setReceiptHeader}
+              />
+
+              <Text style={[styles.inputLabel, { color: theme.text }]}>Receipt Footer Note</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: theme.background, color: theme.text }]}
+                placeholder="e.g. Thank you! Visit again."
+                placeholderTextColor="#94a3b8"
+                value={receiptFooter}
+                onChangeText={setReceiptFooter}
+              />
+
+              <View style={[styles.subConfigHeader, { paddingVertical: 8 }]}>
+                <View>
+                  <Text style={[styles.menuTitle, { color: theme.text }]}>Print UPI QR Code</Text>
+                  <Text style={styles.menuSubtitle}>Add dynamic QR code for instant payment</Text>
+                </View>
+                <Switch value={qrCodeOnReceipt} onValueChange={setQrCodeOnReceipt} trackColor={{ false: "#e2e8f0", true: "#10b981" }} />
+              </View>
+              <View style={styles.menuDivider} />
+
+              <View style={[styles.subConfigHeader, { paddingVertical: 8 }]}>
+                <View>
+                  <Text style={[styles.menuTitle, { color: theme.text }]}>Print Bill Barcode</Text>
+                  <Text style={styles.menuSubtitle}>Print invoice number as scannable barcode</Text>
+                </View>
+                <Switch value={barcodeOnReceipt} onValueChange={setBarcodeOnReceipt} trackColor={{ false: "#e2e8f0", true: "#10b981" }} />
+              </View>
+              <View style={styles.menuDivider} />
+
+              <View style={[styles.subConfigHeader, { paddingVertical: 8 }]}>
+                <View>
+                  <Text style={[styles.menuTitle, { color: theme.text }]}>Print Store Logo</Text>
+                  <Text style={styles.menuSubtitle}>Include logo image at top of receipt</Text>
+                </View>
+                <Switch value={receiptStoreLogo} onValueChange={setReceiptStoreLogo} trackColor={{ false: "#e2e8f0", true: "#10b981" }} />
+              </View>
+              <View style={styles.menuDivider} />
+
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 15 }}>
+                <TouchableOpacity
+                  style={[styles.saveActionBtn, { flex: 1, backgroundColor: "#6366f1", marginTop: 0, marginBottom: 0 }]}
+                  onPress={async () => {
+                    await handleSaveSettings();
+                    setShowCustomizeReceiptModal(false);
+                  }}
+                >
+                  <Text style={styles.saveActionText}>Save Changes</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.saveActionBtn, { flex: 1, backgroundColor: "#10b981", marginTop: 0, marginBottom: 0 }]}
+                  onPress={handleTestPrintReceipt}
+                >
+                  <Text style={styles.saveActionText}>Test Print 🖨️</Text>
+                </TouchableOpacity>
+              </View>
+
+            </ScrollView>
+
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowCustomizeReceiptModal(false)}>
+              <Text style={{ color: "#ef4444", fontWeight: "700" }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* COMPREHENSIVE LABEL PRINTING MODAL */}
+      <Modal visible={showLabelModal} transparent={true} animationType="slide" onRequestClose={() => setShowLabelModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card, maxHeight: "92%", width: "92%" }]}>
+            
+            {/* Modal Title */}
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Icon name="barcode-scan" size={24} color="#8b5cf6" />
+                <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 0 }]}>
+                  {labelTab === "single" ? "Print Price Label" : labelTab === "inventory" ? "Pick Product" : "Batch Label Printing"}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowLabelModal(false)} style={{ padding: 4 }}>
+                <Icon name="close-circle" size={22} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Mode Switcher Tabs */}
+            <View style={{ flexDirection: "row", backgroundColor: darkMode ? "#1e293b" : "#f1f5f9", borderRadius: 12, padding: 4, marginBottom: 14 }}>
+              <TouchableOpacity
+                style={[
+                  { flex: 1, paddingVertical: 8, alignItems: "center", borderRadius: 10 },
+                  labelTab === "single" && { backgroundColor: theme.card, elevation: 2 }
+                ]}
+                onPress={() => setLabelTab("single")}
+              >
+                <Text style={{ fontSize: 13, fontWeight: "700", color: labelTab === "single" ? "#8b5cf6" : "#64748b" }}>Custom</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  { flex: 1, paddingVertical: 8, alignItems: "center", borderRadius: 10 },
+                  labelTab === "inventory" && { backgroundColor: theme.card, elevation: 2 }
+                ]}
+                onPress={() => { setLabelTab("inventory"); loadInventoryProducts(); }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: "700", color: labelTab === "inventory" ? "#8b5cf6" : "#64748b" }}>Inventory</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  { flex: 1, paddingVertical: 8, alignItems: "center", borderRadius: 10 },
+                  labelTab === "batch" && { backgroundColor: theme.card, elevation: 2 }
+                ]}
+                onPress={() => { setLabelTab("batch"); loadInventoryProducts(); }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: "700", color: labelTab === "batch" ? "#8b5cf6" : "#64748b" }}>
+                  Batch {batchItems.length > 0 ? `(${batchItems.length})` : ""}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* TAB 1: SINGLE CUSTOM LABEL */}
+            {labelTab === "single" && (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                
+                {/* Visual Preview Box */}
+                <View style={{
+                  backgroundColor: "#fff",
+                  borderColor: "#cbd5e1",
+                  borderWidth: 1.5,
+                  borderRadius: 14,
+                  padding: 14,
+                  alignItems: "center",
+                  marginBottom: 16,
+                  borderStyle: "dashed"
+                }}>
+                  <Text style={{ fontSize: 12, fontWeight: "800", color: "#64748b", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+                    {shopName || "MY SHOP"}
+                  </Text>
+                  <Text style={{ fontSize: 16, fontWeight: "900", color: "#111827", textAlign: "center", marginBottom: 6 }}>
+                    {labelProductName.trim() || "Sample Product"}
+                  </Text>
+                  
+                  {/* Barcode Simulated Visual */}
+                  <View style={{ alignItems: "center", marginVertical: 4 }}>
+                    <Icon name="barcode" size={44} color="#000" />
+                    <Text style={{ fontSize: 12, fontWeight: "700", letterSpacing: 2, color: "#111827" }}>
+                      {labelBarcode.trim() || "8901030383921"}
+                    </Text>
+                  </View>
+
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: "#16a34a", marginTop: 4 }}>
+                    MRP: ₹{parseFloat(labelPrice) > 0 ? parseFloat(labelPrice).toFixed(2) : "99.00"}
+                  </Text>
+                </View>
+
+                {/* Form Fields */}
+                <Text style={[styles.inputLabel, { color: theme.text }]}>Product Name *</Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: theme.background, color: theme.text }]}
+                  placeholder="e.g. Parle-G Biscuit 250g"
+                  placeholderTextColor="#94a3b8"
+                  value={labelProductName}
+                  onChangeText={setLabelProductName}
+                />
+
+                <Text style={[styles.inputLabel, { color: theme.text }]}>MRP / Price (₹)</Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: theme.background, color: theme.text }]}
+                  placeholder="e.g. 99"
+                  placeholderTextColor="#94a3b8"
+                  keyboardType="numeric"
+                  value={labelPrice}
+                  onChangeText={setLabelPrice}
+                />
+
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Barcode / EAN Number</Text>
+                  <TouchableOpacity onPress={generateRandomBarcode}>
+                    <Text style={{ color: "#8b5cf6", fontSize: 12, fontWeight: "700" }}>+ Auto Generate</Text>
+                  </TouchableOpacity>
+                </View>
+                <TextInput
+                  style={[styles.input, { backgroundColor: theme.background, color: theme.text }]}
+                  placeholder="e.g. 8901030383921"
+                  placeholderTextColor="#94a3b8"
+                  value={labelBarcode}
+                  onChangeText={setLabelBarcode}
+                />
+
+                {/* Copies Counter */}
+                <Text style={[styles.inputLabel, { color: theme.text }]}>Number of Labels to Print</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                  {["1", "2", "5", "10"].map(qty => (
+                    <TouchableOpacity
+                      key={qty}
+                      onPress={() => setLabelCopies(qty)}
+                      style={[
+                        styles.quickChip,
+                        labelCopies === qty && styles.quickChipActive,
+                        { flex: 1, alignItems: "center" }
+                      ]}
+                    >
+                      <Text style={[styles.quickChipText, labelCopies === qty && { color: "#16a34a", fontWeight: "800" }]}>
+                        {qty} {qty === "1" ? "copy" : "copies"}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {/* Action Button */}
+                <TouchableOpacity
+                  disabled={labelPrinting}
+                  style={[styles.saveActionBtn, { backgroundColor: "#8b5cf6", marginTop: 4, marginBottom: 10 }]}
+                  onPress={handlePrintSingleLabel}
+                >
+                  {labelPrinting ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Icon name="printer" size={20} color="#fff" />
+                      <Text style={styles.saveActionText}>Print Label Now</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+              </ScrollView>
+            )}
+
+            {/* TAB 2: PICK FROM INVENTORY */}
+            {labelTab === "inventory" && (
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  style={[styles.input, { backgroundColor: theme.background, color: theme.text, marginBottom: 10 }]}
+                  placeholder="Search inventory products..."
+                  placeholderTextColor="#94a3b8"
+                  value={inventorySearch}
+                  onChangeText={setInventorySearch}
+                />
+
+                {inventoryLoading ? (
+                  <View style={{ paddingVertical: 30, alignItems: "center" }}>
+                    <ActivityIndicator size="large" color="#8b5cf6" />
+                    <Text style={{ color: "#64748b", marginTop: 8 }}>Loading store products...</Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={inventoryProducts.filter(p => {
+                      const q = inventorySearch.toLowerCase();
+                      const name = (p.itemName || p.name || "").toLowerCase();
+                      const code = (p.barcode || "").toLowerCase();
+                      return name.includes(q) || code.includes(q);
+                    })}
+                    keyExtractor={(item, index) => item.id || item.barcode || index.toString()}
+                    ListEmptyComponent={
+                      <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                        <Icon name="package-variant" size={36} color="#94a3b8" />
+                        <Text style={{ color: "#64748b", marginTop: 6 }}>No products found in inventory.</Text>
+                      </View>
+                    }
+                    renderItem={({ item }) => {
+                      const name = item.itemName || item.name || "Product";
+                      const price = Number(item.salesPrice || item.price || 0);
+                      const code = item.barcode || "No Barcode";
+
+                      return (
+                        <View style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          paddingVertical: 10,
+                          paddingHorizontal: 8,
+                          borderBottomWidth: 1,
+                          borderBottomColor: "rgba(0,0,0,0.06)",
+                        }}>
+                          <View style={{ flex: 1, marginRight: 8 }}>
+                            <Text style={[styles.menuTitle, { color: theme.text, fontSize: 14 }]}>{name}</Text>
+                            <Text style={styles.menuSubtitle}>Barcode: {code} · ₹{price.toFixed(2)}</Text>
+                          </View>
+                          <View style={{ flexDirection: "row", gap: 6 }}>
+                            <TouchableOpacity
+                              style={{ backgroundColor: "#8b5cf6", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+                              onPress={() => {
+                                setLabelProductName(name);
+                                setLabelPrice(String(price));
+                                setLabelBarcode(item.barcode || String(Date.now()).slice(-8));
+                                setLabelTab("single");
+                              }}
+                            >
+                              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>Load</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={{ backgroundColor: "#10b981", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+                              onPress={() => addToBatch(item)}
+                            >
+                              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>+ Batch</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    }}
+                  />
+                )}
+              </View>
+            )}
+
+            {/* TAB 3: BATCH PRINTING */}
+            {labelTab === "batch" && (
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <Text style={[styles.menuTitle, { color: theme.text, fontSize: 14 }]}>
+                    Batch Queue ({batchItems.length} products)
+                  </Text>
+                  {batchItems.length > 0 && (
+                    <TouchableOpacity onPress={() => setBatchItems([])}>
+                      <Text style={{ color: "#ef4444", fontSize: 12, fontWeight: "700" }}>Clear All</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {batchItems.length === 0 ? (
+                  <View style={{ paddingVertical: 40, alignItems: "center" }}>
+                    <Icon name="layers-outline" size={44} color="#94a3b8" />
+                    <Text style={{ color: "#64748b", marginVertical: 8, textAlign: "center" }}>
+                      No items in batch queue.{"\n"}Go to "Inventory" tab and tap "+ Batch" on products.
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.findPrinterBtn, { backgroundColor: "#8b5cf6", marginTop: 8 }]}
+                      onPress={() => { setLabelTab("inventory"); loadInventoryProducts(); }}
+                    >
+                      <Icon name="plus" size={16} color="#fff" style={{ marginRight: 6 }} />
+                      <Text style={{ color: "#fff", fontWeight: "700" }}>Add from Inventory</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={batchItems}
+                    keyExtractor={(item, idx) => item.barcode + idx}
+                    renderItem={({ item, index }) => (
+                      <View style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        paddingVertical: 8,
+                        borderBottomWidth: 1,
+                        borderBottomColor: "rgba(0,0,0,0.06)",
+                      }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.menuTitle, { color: theme.text, fontSize: 14 }]}>{item.itemName}</Text>
+                          <Text style={styles.menuSubtitle}>{item.barcode} · ₹{item.price}</Text>
+                        </View>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                          <Text style={{ fontWeight: "700", color: "#16a34a" }}>{item.copies}x</Text>
+                          <TouchableOpacity
+                            onPress={() => {
+                              setBatchItems(prev => prev.filter((_, i) => i !== index));
+                            }}
+                          >
+                            <Icon name="trash-can-outline" size={18} color="#ef4444" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+                  />
+                )}
+
+                {batchItems.length > 0 && (
+                  <TouchableOpacity
+                    disabled={labelPrinting}
+                    style={[styles.saveActionBtn, { backgroundColor: "#8b5cf6", marginTop: 10, marginBottom: 10 }]}
+                    onPress={handlePrintBatchLabels}
+                  >
+                    {labelPrinting ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                        <Icon name="printer" size={20} color="#fff" />
+                        <Text style={styles.saveActionText}>Print Entire Batch ({batchItems.length})</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                )}
+
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowLabelModal(false)}>
+              <Text style={{ color: "#ef4444", fontWeight: "700" }}>Close</Text>
+            </TouchableOpacity>
+
           </View>
         </View>
       </Modal>
@@ -1220,5 +2201,15 @@ const styles = StyleSheet.create({
   editBtn: { position: "absolute", bottom: 15, right: 0, width: 30, height: 30, borderRadius: 15, backgroundColor: "#16a34a", justifyContent: "center", alignItems: "center" },
   labelText: { textAlign: "center", marginTop: 8, fontWeight: "600" },
   findPrinterBtn: { flexDirection: "row", backgroundColor: "#10b981", paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, marginTop: 4, alignItems: "center" },
-  aboutText: { fontSize: 14, lineHeight: 22, textAlign: "center" }
+  aboutText: { fontSize: 14, lineHeight: 22, textAlign: "center" },
+
+  // Delivery Styles
+  statusBanner: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, marginBottom: 15 },
+  deliveryModeCard: { borderRadius: 14, padding: 14, marginBottom: 12, elevation: 1 },
+  deliveryModeHeader: { flexDirection: "row", alignItems: "center" },
+  quickChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: "#cbd5e1", backgroundColor: "#f8fafc" },
+  quickChipActive: { borderColor: "#16a34a", backgroundColor: "#f0fdf4" },
+  quickChipText: { fontSize: 12, fontWeight: "600", color: "#64748b" },
+  modeBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8, alignSelf: "center" },
+  modeBadgeText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 }
 });

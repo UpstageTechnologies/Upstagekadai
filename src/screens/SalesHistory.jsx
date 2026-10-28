@@ -18,6 +18,7 @@ import { db } from "../utils/firebaseConfig";
 import { collection, onSnapshot, doc, getDoc, setDoc } from "firebase/firestore";
 
 import RNPrint from "react-native-print";
+import bluetoothPrinter from "../utils/bluetoothPrinter";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { getSession } from "../utils/session";
 import { ThemeContext } from "../theme/ThemeContext";
@@ -34,6 +35,9 @@ export default function SalesHistory({ appMode }) {
   const [showBill, setShowBill] = useState(false);
   const [search, setSearch] = useState("");
   const [shopName, setShopName] = useState("MY SHOP");
+  const [shopAddress, setShopAddress] = useState("");
+  const [shopPhone, setShopPhone] = useState("");
+  const [gstNumber, setGstNumber] = useState("");
   const [currentMode, setCurrentMode] = useState("local");
   const [userId, setUserId] = useState(null);
 
@@ -96,6 +100,9 @@ export default function SalesHistory({ appMode }) {
         if (snap && snap.exists()) {
           const uData = snap.data();
           setShopName(uData[`${targetMode}_shopName`] || uData.shopName || "MY SHOP");
+          if (uData.address) setShopAddress(uData.address);
+          if (uData.phone) setShopPhone(uData.phone);
+          if (uData.gstNumber && uData.gstEnabled) setGstNumber(uData.gstNumber);
           setClosedDays(uData.closedDays || {});
         }
       } catch (err) {
@@ -274,6 +281,37 @@ export default function SalesHistory({ appMode }) {
     const total = Number(selectedBill?.total || 0);
     const formattedBillDate = parseDate(selectedBill?.createdAt).toLocaleString("en-GB");
     const pMode = selectedBill?.paymentMode || "CASH";
+
+    try {
+      const itemsToPrint = (selectedBill.items || []).map((i) => {
+        const itemPrice = Number(i.price || i.salesPrice || 0);
+        const itemQty = Number(i.qty || 1);
+        return {
+          name: i.itemName || i.name || "Item",
+          qty: itemQty,
+          price: itemPrice,
+          total: itemPrice * itemQty,
+        };
+      });
+
+      await bluetoothPrinter.printReceipt({
+        shopName: shopName || "MY SHOP",
+        address: shopAddress || "",
+        phone: shopPhone || "",
+        gstNumber: gstNumber || "",
+        billNo: billNo,
+        date: formattedBillDate,
+        header: `Payment: ${pMode}`,
+        footer: "Thank you! Visit again.",
+        items: itemsToPrint,
+        subtotal: total,
+        total: total,
+        paymentMode: pMode,
+      });
+      return;
+    } catch (err) {
+      console.log("Bluetooth print fallback to system print:", err);
+    }
 
     const html = `
     <html>
@@ -467,59 +505,57 @@ export default function SalesHistory({ appMode }) {
                 </View>
 
                 {/* Variance Indicator */}
-                {isClosed && (
-                  <View
-                    style={[
-                      styles.cardVarianceBanner,
-                      {
-                        backgroundColor:
-                          cashDiff < 0 ? "#fef2f2" : cashDiff > 0 ? "#eff6ff" : "#ecfdf5",
-                        borderColor:
-                          cashDiff < 0 ? "#fecaca" : cashDiff > 0 ? "#bfdbfe" : "#a7f3d0",
-                      },
-                    ]}
-                  >
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                      <Icon
-                        name={
-                          cashDiff < 0
-                            ? "alert-circle"
-                            : cashDiff > 0
-                            ? "plus-circle"
-                            : "check-circle"
-                        }
-                        size={16}
-                        color={
-                          cashDiff < 0 ? "#dc2626" : cashDiff > 0 ? "#2563eb" : "#10b981"
-                        }
-                      />
-                      <Text
-                        style={{
-                          fontSize: 12,
-                          fontWeight: "700",
-                          color:
-                            cashDiff < 0 ? "#b91c1c" : cashDiff > 0 ? "#1d4ed8" : "#047857",
-                        }}
-                      >
-                        {cashDiff < 0
-                          ? "Cash Shortage"
+                <View
+                  style={[
+                    styles.cardVarianceBanner,
+                    {
+                      backgroundColor:
+                        cashDiff < 0 ? "#fef2f2" : cashDiff > 0 ? "#eff6ff" : "#ecfdf5",
+                      borderColor:
+                        cashDiff < 0 ? "#fecaca" : cashDiff > 0 ? "#bfdbfe" : "#a7f3d0",
+                    },
+                  ]}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Icon
+                      name={
+                        cashDiff < 0
+                          ? "alert-circle"
                           : cashDiff > 0
-                          ? "Excess Cash"
-                          : "Cash Balanced"}
-                      </Text>
-                    </View>
+                          ? "plus-circle"
+                          : "check-circle"
+                      }
+                      size={16}
+                      color={
+                        cashDiff < 0 ? "#dc2626" : cashDiff > 0 ? "#2563eb" : "#10b981"
+                      }
+                    />
                     <Text
                       style={{
-                        fontSize: 13,
-                        fontWeight: "800",
+                        fontSize: 12,
+                        fontWeight: "700",
                         color:
                           cashDiff < 0 ? "#b91c1c" : cashDiff > 0 ? "#1d4ed8" : "#047857",
                       }}
                     >
-                      {cashDiff < 0 ? `- ₹${Math.abs(cashDiff).toFixed(2)}` : cashDiff > 0 ? `+ ₹${cashDiff.toFixed(2)}` : "₹0.00"}
+                      {cashDiff < 0
+                        ? "Cash Shortage"
+                        : cashDiff > 0
+                        ? "Excess Cash"
+                        : "Cash Balanced"}
                     </Text>
                   </View>
-                )}
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: "800",
+                      color:
+                        cashDiff < 0 ? "#b91c1c" : cashDiff > 0 ? "#1d4ed8" : "#047857",
+                    }}
+                  >
+                    {cashDiff < 0 ? `- ₹${Math.abs(cashDiff).toFixed(2)}` : cashDiff > 0 ? `+ ₹${cashDiff.toFixed(2)}` : "₹0.00"}
+                  </Text>
+                </View>
 
                 {/* Action Bar inside Card */}
                 <View style={[styles.actionBanner, { backgroundColor: isClosed ? "#f1f5f9" : "#10b981" }]}>

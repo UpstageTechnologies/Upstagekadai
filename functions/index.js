@@ -1,3 +1,4 @@
+
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 
@@ -6,6 +7,112 @@ const admin = require("firebase-admin");
 admin.initializeApp();
 
 const db = admin.firestore();
+
+const makeLocationId = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+exports.addLocation = onCall(async (request) => {
+  const { type, name, countryCode, state, district, city } =
+    request.data || {};
+  const recordTypes = {
+    Country: "country",
+    State: "state",
+    District: "district",
+    City: "city",
+    Area: "area",
+  };
+  const collectionNames = {
+    State: "states",
+    District: "districts",
+    City: "cities",
+    Area: "areas",
+  };
+  const cleanName = String(name || "").trim();
+  const locationId = makeLocationId(cleanName);
+
+  if (!recordTypes[type]) {
+    throw new HttpsError("invalid-argument", "Unsupported location type.");
+  }
+  if (!cleanName || cleanName.length > 100 || !locationId) {
+    throw new HttpsError("invalid-argument", "Enter a valid location name.");
+  }
+
+  const path = ["location_master"];
+  const parentPaths = [];
+  const locationData = {
+    name: cleanName,
+    type: recordTypes[type],
+    isActive: true,
+  };
+
+  if (type === "Country") {
+    locationData.code = locationId.toUpperCase();
+  } else {
+    const cleanCountryCode = String(countryCode || "").trim();
+    if (!cleanCountryCode) {
+      throw new HttpsError("invalid-argument", "Select a country first.");
+    }
+    path.push(cleanCountryCode);
+    parentPaths.push([...path]);
+    locationData.country = cleanCountryCode;
+
+    if (type !== "State") {
+      const stateName = String(state || "").trim();
+      const stateId = makeLocationId(stateName);
+      if (!stateId) {
+        throw new HttpsError("invalid-argument", "Select a state first.");
+      }
+      path.push("states", stateId);
+      parentPaths.push([...path]);
+      locationData.state = stateName;
+    }
+
+    if (["City", "Area"].includes(type)) {
+      const districtName = String(district || "").trim();
+      const districtId = makeLocationId(districtName);
+      if (!districtId) {
+        throw new HttpsError("invalid-argument", "Select a district first.");
+      }
+      path.push("districts", districtId);
+      parentPaths.push([...path]);
+      locationData.district = districtName;
+    }
+
+    if (type === "Area") {
+      const cityName = String(city || "").trim();
+      const cityId = makeLocationId(cityName);
+      if (!cityId) {
+        throw new HttpsError("invalid-argument", "Select a city first.");
+      }
+      path.push("cities", cityId);
+      parentPaths.push([...path]);
+      locationData.city = cityName;
+    }
+  }
+
+  for (const parentPath of parentPaths) {
+    const parentSnapshot = await db.doc(parentPath.join("/")).get();
+    if (!parentSnapshot.exists) {
+      throw new HttpsError("failed-precondition", "A selected parent location does not exist.");
+    }
+  }
+
+  path.push(...(collectionNames[type] ? [collectionNames[type]] : []), locationId);
+  try {
+    await db.doc(path.join("/")).create(locationData);
+  } catch (error) {
+    if (error.code === 6 || error.code === "already-exists") {
+      throw new HttpsError("already-exists", "This location already exists.");
+    }
+    throw error;
+  }
+
+  return { id: locationId, name: cleanName };
+});
 
 // ======================================================
 // CREATE SELLER
@@ -299,7 +406,7 @@ exports.registerSeller = onCall(async (request) => {
     // ==================================================
 
     console.log(
-      "🎉🎉🎉 REGISTER SELLER SUCCESS:",
+      "REGISTER SELLER SUCCESS",
       customUid
     );
 

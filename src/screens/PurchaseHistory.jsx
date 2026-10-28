@@ -25,6 +25,7 @@ import {
 
 import RNFS from "react-native-fs";
 import RNPrint from "react-native-print";
+import bluetoothPrinter from "../utils/bluetoothPrinter";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { getSession } from "../utils/session";
 import { ThemeContext } from "../theme/ThemeContext";
@@ -282,6 +283,33 @@ export default function PurchaseHistory({ appMode }) {
     const purchaseNo = selectedBill.displayBillNo || selectedBill.billNo || selectedBill.invoiceId || "PUR-0000";
     const purchaseDate = parseDate(selectedBill.createdAt).toLocaleDateString("en-GB");
 
+    try {
+      const itemsToPrint = selectedBill.items.map((i) => {
+        const itemPrice = Number(i.purchasePrice || i.price || 0);
+        const itemQty = Number(i.qty || 1);
+        return {
+          name: i.itemName || i.name || "Item",
+          qty: itemQty,
+          price: itemPrice,
+          total: itemPrice * itemQty,
+        };
+      });
+
+      await bluetoothPrinter.printReceipt({
+        shopName: shopName || "MY SHOP",
+        billNo: purchaseNo,
+        date: purchaseDate,
+        header: `Stock Purchase (${currentMode.toUpperCase()})\nSupplier: ${selectedBill?.supplierName || "-"}`,
+        footer: "Stock Entry Verified",
+        items: itemsToPrint,
+        subtotal: purchaseTotal,
+        total: purchaseTotal + Number(tax),
+      });
+      return;
+    } catch (err) {
+      console.log("Bluetooth print fallback to system print:", err);
+    }
+
     let logoHtml = "";
     try {
       if (shopLogo) {
@@ -342,7 +370,9 @@ export default function PurchaseHistory({ appMode }) {
   const diffVal = actualVal - expectedVal;
 
   const isToday = currentCard?.dateKey === new Date().toLocaleDateString("en-GB");
-  const isClosed = currentCard ? closedDays[currentCard.dateKey]?.isClosed : false;
+  const closedInfo = currentCard ? closedDays[currentCard.dateKey] : null;
+  const isClosed = closedInfo?.isClosed || false;
+  const cashDiff = closedInfo?.difference ?? 0;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -463,6 +493,59 @@ export default function PurchaseHistory({ appMode }) {
                     <Text style={styles.metricLabel}>UPI / Online</Text>
                     <Text style={[styles.metricValue, { color: "#06b6d4" }]}>₹{(currentCard.upiTotal + currentCard.razorpayTotal).toFixed(0)}</Text>
                   </View>
+                </View>
+
+                {/* Variance Banner */}
+                <View
+                  style={[
+                    styles.cardVarianceBanner,
+                    {
+                      backgroundColor:
+                        cashDiff < 0 ? "#fef2f2" : cashDiff > 0 ? "#eff6ff" : "#ecfdf5",
+                      borderColor:
+                        cashDiff < 0 ? "#fecaca" : cashDiff > 0 ? "#bfdbfe" : "#a7f3d0",
+                    },
+                  ]}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Icon
+                      name={
+                        cashDiff < 0
+                          ? "alert-circle"
+                          : cashDiff > 0
+                          ? "plus-circle"
+                          : "check-circle"
+                      }
+                      size={16}
+                      color={
+                        cashDiff < 0 ? "#dc2626" : cashDiff > 0 ? "#2563eb" : "#10b981"
+                      }
+                    />
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: "700",
+                        color:
+                          cashDiff < 0 ? "#b91c1c" : cashDiff > 0 ? "#1d4ed8" : "#047857",
+                      }}
+                    >
+                      {cashDiff < 0
+                        ? "Expense Shortage"
+                        : cashDiff > 0
+                        ? "Excess Cash Paid"
+                        : "Exact Match"}
+                    </Text>
+                  </View>
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      fontWeight: "800",
+                      color:
+                        cashDiff < 0 ? "#b91c1c" : cashDiff > 0 ? "#1d4ed8" : "#047857",
+                    }}
+                  >
+                    {cashDiff < 0 ? `- ₹${Math.abs(cashDiff).toFixed(2)}` : cashDiff > 0 ? `+ ₹${cashDiff.toFixed(2)}` : "₹0.00"}
+                  </Text>
                 </View>
 
                 {/* Action Bar inside Card */}
@@ -1000,6 +1083,16 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginTop: 2,
   },
+  cardVarianceBanner: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+  },
   actionBanner: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1343,5 +1436,5 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "700",
     fontSize: 14,
-  },
-});
+  }, 
+});  

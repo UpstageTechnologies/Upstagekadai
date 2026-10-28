@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   StatusBar,
   useColorScheme,
@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Animated,
   Platform,
+  AppState,
 } from "react-native";
 
 import {
@@ -15,6 +16,7 @@ import {
 } from "@react-navigation/native";
 
 import notifee, { EventType } from "@notifee/react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
@@ -63,7 +65,36 @@ import StaffLoginScreen from "./src/screens/StaffLogin";
 import {
   createNotificationChannel,
   displayNotification,
+  PENDING_NOTIFICATION_PRESS_KEY,
 } from "./src/utils/notification/notifications";
+
+type RootStackParamList = {
+  Onboarding: undefined;
+  Splash: undefined;
+  LoginRoleSelection: undefined;
+  Login: undefined;
+  StaffLogin: undefined;
+  Register: undefined;
+  Trial: undefined;
+  Dashboard: undefined;
+  JournalEntry: undefined;
+  Scan: undefined;
+  Sales: undefined;
+  SalesHistory: { appMode?: string } | undefined;
+  PurchaseHistory: { appMode?: string } | undefined;
+  Inventory: { appMode?: string } | undefined;
+  Subscription: undefined;
+  DemoLogin: undefined;
+  StaffCreation: undefined;
+  Profile: undefined;
+  Settings: undefined;
+  Orders: { orderId?: string; status?: string; appMode?: string };
+};
+
+type PendingNotificationNavigation = {
+  name: "Orders";
+  params: { orderId: string; status: string };
+};
 
 // ======================================================
 // Global Offline Banner Component
@@ -73,7 +104,10 @@ function OfflineBanner() {
   const [isOffline, setIsOffline] = useState(false);
   const slideAnim = useRef(new Animated.Value(-120)).current;
 
-  const updateNetworkStatus = (state) => {
+  const updateNetworkStatus = useCallback((state: {
+    isConnected: boolean | null;
+    isInternetReachable: boolean | null;
+  }) => {
     const offline =
       state.isConnected === false ||
       (state.isConnected === true && state.isInternetReachable === false);
@@ -84,14 +118,14 @@ function OfflineBanner() {
       useNativeDriver: true,
       bounciness: 4,
     }).start();
-  };
+  }, [slideAnim]);
 
   useEffect(() => {
     NetInfo.fetch().then(updateNetworkStatus);
     const unsubscribe = NetInfo.addEventListener(updateNetworkStatus);
 
     return () => unsubscribe();
-  }, [slideAnim]);
+  }, [slideAnim, updateNetworkStatus]);
 
   return (
     <Animated.View
@@ -124,56 +158,87 @@ function OfflineBanner() {
 
 const Stack = createNativeStackNavigator();
 
-export const navigationRef = createNavigationContainerRef();
+export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
-const openOrdersFromNotification = (orderId, status = "") => {
-  if (!orderId) {
-    console.log("⚠️ No orderId from notification");
-    return;
-  }
+let pendingNotificationNavigation: PendingNotificationNavigation | null = null;
+const recentNotificationPresses = new Map();
 
-  const navigate = () => {
-    if (!navigationRef.isReady()) {
-      return false;
-    }
+function flushPendingNotificationNavigation() {
+  if (!pendingNotificationNavigation || !navigationRef.isReady()) return;
 
-    console.log("=================================");
-    console.log("🛒 OPENING ORDERS FROM NOTIFICATION");
-    console.log("🧾 ORDER ID:", orderId);
-    console.log("📦 STATUS:", status);
-    console.log("=================================");
+  const currentRoute = navigationRef.getCurrentRoute()?.name;
+  // Wait for Splash/auth routing to settle. That provides the proper base route
+  // (Dashboard) for a cold-start deep link and avoids bypassing sign-in.
+  if (currentRoute !== "Dashboard" && currentRoute !== "Orders") return;
 
-    navigationRef.reset({
-      index: 0,
-      routes: [
-        {
-          name: "Orders",
-          params: {
-            orderId: String(orderId),
-            status: String(status || ""),
-          },
-        },
-      ],
+  const { name, params } = pendingNotificationNavigation;
+  pendingNotificationNavigation = null;
+  const rootState = navigationRef.getRootState();
+  if (currentRoute === "Orders" && rootState.routes.length === 1) {
+    // Repair a root-only Orders state from an older app session so Back has a
+    // valid fallback instead of exiting the application.
+    navigationRef.resetRoot({
+      index: 1,
+      routes: [{ name: "Dashboard" }, { name, params }],
     });
+    console.log("✅ Notification navigation restored Dashboard fallback", params);
+    return;
+  }
+  navigationRef.navigate(name, params);
+  console.log("✅ Notification navigation opened", name, params);
+}
 
-    console.log("✅ RESET TO ORDERS SCREEN");
-    return true;
-  };
+function openNotificationDestination(
+  data?: Record<string, unknown> | null,
+  notificationId = "",
+  coldStart = false
+) {
+  const screen = String(data?.screen || "");
+  const orderId = String(data?.orderId || "").trim();
+  const status = String(data?.status || "");
 
-  if (navigate()) {
+  if (screen !== "Orders" || !orderId) {
+    console.log("⚠️ Unsupported or incomplete notification payload:", data);
     return;
   }
 
-  const timer = setInterval(() => {
-    if (navigate()) {
-      clearInterval(timer);
-    }
-  }, 300);
+  const dedupeKeys = [
+    String(data?.messageId || notificationId || `${screen}:${orderId}:${status}`),
+    `${screen}:${orderId}:${status}`,
+  ];
+  const now = Date.now();
+  const alreadyHandled = dedupeKeys.find(key => {
+    const lastHandledAt = recentNotificationPresses.get(key);
+    return lastHandledAt && now - lastHandledAt < 5000;
+  });
+  if (alreadyHandled) {
+    console.log("ℹ️ Duplicate notification press ignored:", alreadyHandled);
+    return;
+  }
+  dedupeKeys.forEach(key => recentNotificationPresses.set(key, now));
+  for (const [key, timestamp] of recentNotificationPresses) {
+    if (now - timestamp > 30000) recentNotificationPresses.delete(key);
+  }
 
-  setTimeout(() => {
-    clearInterval(timer);
-  }, 10000);
-};
+  const params = { orderId, status };
+  if (!navigationRef.isReady() || coldStart) {
+    pendingNotificationNavigation = { name: screen, params };
+    flushPendingNotificationNavigation();
+    return;
+  }
+
+  const currentRoute = navigationRef.getCurrentRoute()?.name;
+  if (["Splash", "Onboarding", "Login", "LoginRoleSelection", "StaffLogin", "Register"].includes(currentRoute || "")) {
+    pendingNotificationNavigation = { name: screen, params };
+    flushPendingNotificationNavigation();
+    return;
+  }
+
+  // navigate reuses an existing Orders route when present, preserving the
+  // user's current stack and avoiding duplicate Orders screens.
+  navigationRef.navigate("Orders", params);
+  console.log("✅ Notification destination opened", screen, params);
+}
 
 function App() {
   const isDarkMode = useColorScheme() === "dark";
@@ -182,7 +247,7 @@ function App() {
   // 🔔 NOTIFICATION SETUP
   // ====================================================
   useEffect(() => {
-    let unsubscribe;
+    let unsubscribe: (() => void) | undefined;
 
     const setupNotifications = async () => {
       try {
@@ -196,24 +261,28 @@ function App() {
 
         unsubscribe = onMessage(messagingInstance, async (remoteMessage) => {
           try {
-            const title =
+            const title = String(
               remoteMessage?.notification?.title ||
               remoteMessage?.data?.title ||
-              "🛒 New Order";
+              "🛒 New Order"
+            );
 
-            const body =
+            const body = String(
               remoteMessage?.notification?.body ||
               remoteMessage?.data?.body ||
-              "You have received a new order";
+              "You have received a new order"
+            );
 
-            const orderId = remoteMessage?.data?.orderId || "";
-            const status = remoteMessage?.data?.status || "";
+            const orderId = String(remoteMessage?.data?.orderId || "");
+            const status = String(remoteMessage?.data?.status || "");
 
             await displayNotification({
               title,
               body,
               orderId,
               status,
+              screen: String(remoteMessage?.data?.screen || ""),
+              messageId: remoteMessage?.messageId || "",
             });
           } catch (error) {
             console.log("❌ Foreground notification error:", error);
@@ -234,7 +303,7 @@ function App() {
   }, []);
 
   // ======================================================
-  // 🔔 NOTIFICATION CLICK - APP OPEN / BACKGROUND
+  // 🔔 NOTIFICATION PRESS - APP ALREADY RUNNING OR RETURNING FROM BACKGROUND
   // ======================================================
   useEffect(() => {
     const messagingInstance = getMessaging();
@@ -243,14 +312,15 @@ function App() {
       async ({ type, detail }) => {
         try {
           if (type !== EventType.PRESS) return;
-
-          const orderId = detail.notification?.data?.orderId;
-          const status = detail.notification?.data?.status;
-          const screen = detail.notification?.data?.screen;
-
-          if (screen === "Orders" && orderId) {
-            openOrdersFromNotification(orderId, status);
+          try {
+            await AsyncStorage.removeItem(PENDING_NOTIFICATION_PRESS_KEY);
+          } catch (storageError) {
+            console.log("⚠️ Could not clear queued notification press:", storageError);
           }
+          openNotificationDestination(
+            detail.notification?.data,
+            detail.notification?.id || ""
+          );
         } catch (error) {
           console.log("❌ Notifee notification click error:", error);
         }
@@ -261,13 +331,10 @@ function App() {
       messagingInstance,
       (remoteMessage) => {
         try {
-          const orderId = remoteMessage?.data?.orderId;
-          const status = remoteMessage?.data?.status;
-          const screen = remoteMessage?.data?.screen;
-
-          if (screen === "Orders" && orderId) {
-            openOrdersFromNotification(orderId, status);
-          }
+          openNotificationDestination(
+            remoteMessage?.data,
+            remoteMessage?.messageId || ""
+          );
         } catch (error) {
           console.log("❌ FCM notification click error:", error);
         }
@@ -281,40 +348,69 @@ function App() {
   }, []);
 
   // ======================================================
-  // 🚀 NOTIFICATION CLICK - APP COMPLETELY CLOSED
+  // 🚀 INITIAL / BACKGROUND NOTIFICATION PRESS
   // ======================================================
   useEffect(() => {
+    let active = true;
+
+    const consumeStoredNotifeePress = async () => {
+      try {
+        const storedPress = await AsyncStorage.getItem(PENDING_NOTIFICATION_PRESS_KEY);
+        if (!storedPress) return;
+        try {
+          await AsyncStorage.removeItem(PENDING_NOTIFICATION_PRESS_KEY);
+        } catch (storageError) {
+          console.log("⚠️ Could not clear stored notification press:", storageError);
+        }
+        if (!active) return;
+
+        const parsed = JSON.parse(storedPress);
+        openNotificationDestination(
+          parsed?.data,
+          parsed?.notificationId || "",
+          !navigationRef.isReady()
+        );
+      } catch (error) {
+        console.log("❌ Stored notification press error:", error);
+      }
+    };
+
     const checkInitialNotification = async () => {
       try {
         const notifeeInitial = await notifee.getInitialNotification();
         if (notifeeInitial) {
-          const orderId = notifeeInitial.notification?.data?.orderId;
-          const status = notifeeInitial.notification?.data?.status;
-          const screen = notifeeInitial.notification?.data?.screen;
-
-          if (screen === "Orders" && orderId) {
-            openOrdersFromNotification(orderId, status);
-            return;
-          }
+          openNotificationDestination(
+            notifeeInitial.notification?.data,
+            notifeeInitial.notification?.id || "",
+            true
+          );
         }
+
+        await consumeStoredNotifeePress();
 
         const messagingInstance = getMessaging();
         const fcmInitial = await getFCMInitialNotification(messagingInstance);
         if (fcmInitial) {
-          const orderId = fcmInitial?.data?.orderId;
-          const status = fcmInitial?.data?.status;
-          const screen = fcmInitial?.data?.screen;
-
-          if (screen === "Orders" && orderId) {
-            openOrdersFromNotification(orderId, status);
-          }
+          openNotificationDestination(
+            fcmInitial.data,
+            fcmInitial.messageId || "",
+            true
+          );
         }
       } catch (error) {
         console.log("❌ Initial notification error:", error);
       }
     };
 
+    const appStateSubscription = AppState.addEventListener("change", nextState => {
+      if (nextState === "active") consumeStoredNotifeePress();
+    });
+
     checkInitialNotification();
+    return () => {
+      active = false;
+      appStateSubscription.remove();
+    };
   }, []);
 
   // ======================================================
@@ -328,7 +424,11 @@ function App() {
         {/* 🌐 Global Offline Bar Across All Pages */}
         <OfflineBanner />
 
-        <NavigationContainer ref={navigationRef}>
+        <NavigationContainer
+          ref={navigationRef}
+          onReady={flushPendingNotificationNavigation}
+          onStateChange={flushPendingNotificationNavigation}
+        >
           <Stack.Navigator
             initialRouteName="Splash"
             screenOptions={{
