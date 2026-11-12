@@ -21,6 +21,13 @@ import { LineChart, Grid } from "react-native-svg-charts";
 import SalesHistory from "./SalesHistory";
 import PurchaseHistory from "./PurchaseHistory";
 import InventoryScreen from "./InventoryScreen";
+import RestaurantMenuScreen from "./restaurant/RestaurantMenuScreen";
+import {
+  fetchAndCacheShopType,
+  getCachedShopType,
+  isRestaurantShop,
+  setCachedShopType,
+} from "../utils/restaurantMode";
 import { useFocusEffect } from "@react-navigation/native";
 import { getSession } from "../utils/session";
 import { useTheme } from "../theme/ThemeContext";
@@ -29,19 +36,23 @@ import NetInfo from "@react-native-community/netinfo";
 
 export default function Dashboard({ navigation }) {
   const { width, height } = useWindowDimensions();
-  const isTablet = width >= 768;
+  const isTablet = Platform.isPad || width >= 768;
+  const isLandscape = isTablet && width > height;
   const insets = useSafeAreaInsets();
 
   // Dynamic Responsive Insets & Paddings for iOS (Dynamic Island / Notch / Home Bar) & Android
   const topInset = Platform.OS === "ios"
-    ? (insets.top > 0 ? insets.top + 6 : 50)
+    ? (insets.top > 0 ? insets.top + (isTablet ? 10 : 6) : (isTablet ? 24 : 50))
     : (StatusBar.currentHeight || insets.top || 24) + 10;
 
   const bottomInset = Platform.OS === "ios"
-    ? (insets.bottom > 0 ? insets.bottom + 6 : 20)
+    ? (insets.bottom > 0 ? insets.bottom + (isTablet ? 8 : 6) : 20)
     : 16;
 
-  const horizPad = isTablet ? 24 : 16;
+  // On iPad, use balanced responsive horizontal padding that centers content nicely on wide screens
+  const horizPad = isTablet
+    ? (isLandscape ? Math.max(32, (width - 1220) / 2) : Math.max(28, (width - 980) / 2))
+    : 16;
 
   const [image, setImage] = useState(null);
   const [sales, setSales] = useState([]);
@@ -66,6 +77,8 @@ export default function Dashboard({ navigation }) {
   const [shopLogo, setShopLogo] = useState(null);
   const [isGlobalMode, setIsGlobalMode] = useState(false);
   const [userRole, setUserRole] = useState("master");
+  const [shopType, setShopType] = useState("");
+  const [isRestaurant, setIsRestaurant] = useState(false);
 
   const [isOffline, setIsOffline] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
@@ -97,10 +110,12 @@ export default function Dashboard({ navigation }) {
       setIsOffline(offline);
     });
     return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userUid, isGlobalMode]);
 
   useEffect(() => {
     loadSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadSession = async () => {
@@ -109,6 +124,11 @@ export default function Dashboard({ navigation }) {
       if (session?.uid) {
         setUserUid(session.uid);
         setUserRole(session.role || "master");
+        const cachedType = await getCachedShopType(session.uid);
+        if (cachedType) {
+          setShopType(cachedType);
+          setIsRestaurant(isRestaurantShop(cachedType));
+        }
         checkUserSubscription(session.uid);
       }
     } catch (e) {
@@ -130,24 +150,18 @@ export default function Dashboard({ navigation }) {
 
         setHasChosenPlan(true);
 
-        if (plan === "Basic") {
-          setUserPlan("Basic");
-          setSubscriptionStatus("active");
-          setPlanColor("#6366F1");
+        if (expiry && now > expiry) {
+          setUserPlan("Expired");
+          setSubscriptionStatus("expired");
+          setPlanColor("#EF4444");
+          setShowUpgradeModal(true);
         } else {
-          if (expiry && now > expiry) {
-            setUserPlan("Expired");
-            setSubscriptionStatus("expired");
-            setPlanColor("#EF4444");
-            setShowUpgradeModal(true);
-          } else {
-            setUserPlan(plan);
-            setSubscriptionStatus("active");
-            if (plan.toLowerCase().includes("basic")) setPlanColor("#2563EB");
-            else if (plan.toLowerCase().includes("premium")) setPlanColor("#16A34A");
-            else if (plan.toLowerCase().includes("pro")) setPlanColor("#D97706");
-            else setPlanColor("#10B981");
-          }
+          setUserPlan(plan);
+          setSubscriptionStatus("active");
+          if (plan.toLowerCase().includes("basic")) setPlanColor("#6366F1");
+          else if (plan.toLowerCase().includes("premium")) setPlanColor("#16A34A");
+          else if (plan.toLowerCase().includes("pro")) setPlanColor("#D97706");
+          else setPlanColor("#10B981");
         }
       } else {
         // Fallback default for new users
@@ -174,7 +188,13 @@ export default function Dashboard({ navigation }) {
       const snapDoc = await getDoc(userDocRef);
       if (snapDoc && snapDoc.exists()) {
         const data = snapDoc.data();
-        setShopName(data[`${modeStr}_shopName`] || data.shopName || (modeIsGlobal ? "Global Shop" : "Local Shop"));
+        const serverShopType = data.shopType || data.businessType || "";
+        if (serverShopType) {
+          setShopType(serverShopType);
+          setIsRestaurant(isRestaurantShop(serverShopType));
+          await setCachedShopType(uid, serverShopType);
+        }
+        setShopName(data[`${modeStr}_shopName`] || data.shopName || (modeIsGlobal ? "Global Shop" : isRestaurantShop(serverShopType) ? "Restaurant" : "Local Shop"));
         setShopLogo(data[`${modeStr}_shopLogo`] || data.shopLogo || null);
         setImage(data[`${modeStr}_profileImage`] || data.profileImage || null);
       }
@@ -210,6 +230,7 @@ export default function Dashboard({ navigation }) {
     if (userUid) {
       checkModeAndLoad();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userUid]);
 
   useFocusEffect(
@@ -409,6 +430,318 @@ export default function Dashboard({ navigation }) {
 
   const isLocked = subscriptionStatus === "expired" && userRole === "employee";
 
+  // ==========================================
+  // RESPONSIVE SUB-COMPONENTS FOR TABLET & PHONE
+  // ==========================================
+  const renderBalanceCard = (cardStyle = {}) => (
+    <TouchableOpacity activeOpacity={0.9} onPress={handleRestrictedClick} style={cardStyle}>
+      <View style={[styles.balanceCard, isTablet && styles.tabletBalanceCard, { backgroundColor: modeAccent, shadowColor: modeAccent }]}>
+        <View style={{ flex: 1, marginRight: 12 }}>
+          <Text style={[styles.balanceText, isTablet && styles.tabletBalanceText]}>
+            {isGlobalMode ? "Global Delivered Sales" : "Total Sales"}
+          </Text>
+          <Text
+            style={[styles.balanceAmount, isTablet && styles.tabletBalanceAmount]}
+            numberOfLines={1}
+            adjustsFontSizeToFit={true}
+            minimumFontScale={0.75}
+          >
+            {isLocked ? "🔒 Locked" : `₹ ${totalSales.toFixed(2)}`}
+          </Text>
+          {isTablet && (
+            <View style={styles.tabletGrossBadge}>
+              <Icon name="check-decagram" size={13} color="#ffffff" style={{ marginRight: 4 }} />
+              <Text style={styles.tabletGrossText}>Gross Revenue</Text>
+            </View>
+          )}
+        </View>
+        <TouchableOpacity
+          style={[styles.journalBtn, isTablet && styles.tabletJournalBtn]}
+          onPress={() => {
+            if (isLocked) {
+              setShowUpgradeModal(true);
+              return;
+            }
+            navigation.navigate("JournalEntry");
+          }}
+          activeOpacity={0.8}
+        >
+          <Icon name="book-outline" size={isTablet ? 28 : 24} color={modeAccent} />
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+
+  const renderProfitCard = (cardStyle = {}) => (
+    <TouchableOpacity activeOpacity={0.95} onPress={handleRestrictedClick} style={cardStyle}>
+      <View style={[styles.growthCard, isTablet && styles.tabletProfitCard]}>
+        <View style={styles.growthTopRow}>
+          <View style={{ flex: 1, marginRight: 10 }}>
+            <Text style={[styles.growthTitle, isTablet && styles.tabletGrowthTitle]}>
+              {isGlobalMode ? "Global Profit" : "Total Profit"}
+            </Text>
+            <Text
+              style={[styles.growthAmount, isTablet && styles.tabletGrowthAmount]}
+              numberOfLines={1}
+              adjustsFontSizeToFit={true}
+              minimumFontScale={0.75}
+            >
+              {isLocked ? "🔒 Locked" : `₹ ${displayProfit.toFixed(2)}`}
+            </Text>
+            <View style={styles.percentBadge}>
+              <Text style={styles.growthPercent}>↑ +18.6%</Text>
+            </View>
+            <Text style={styles.lastMonthText}>vs last month</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.monthChip, isTablet && styles.tabletMonthChip]}
+            onPress={() => {
+              if (isLocked) {
+                setShowUpgradeModal(true);
+                return;
+              }
+              setProfitView(profitView === "total" ? "month" : "total");
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={{ color: "#fff", fontWeight: "600", fontSize: isTablet ? 14 : 13 }}>
+              {profitView === "month" ? "This Month" : "Total Profit"}
+            </Text>
+            <Icon name="chevron-down" size={isTablet ? 20 : 18} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
+  const renderChartBlock = (chartHeight = 210) => (
+    <View style={{ marginTop: 20, position: "relative" }}>
+      <LineChart
+        style={{ height: chartHeight, width: "100%" }}
+        data={isLocked ? [0, 0] : chartData}
+        svg={{ stroke: "#78ff9a", strokeWidth: isTablet ? 2.8 : 2.5 }}
+        contentInset={{ top: 16, bottom: 20, left: 10, right: 48 }}
+      >
+        <Grid svg={{ stroke: "rgba(255,255,255,.08)", strokeDasharray: [3, 4] }} />
+      </LineChart>
+      <View style={styles.yAxisContainer}>
+        {yAxisLabels.map((v, i) => (
+          <Text key={i} style={[styles.axisText, isTablet && { fontSize: 13 }]}>
+            {v >= 1000 ? (v / 1000).toFixed(0) + "K" : v}
+          </Text>
+        ))}
+      </View>
+    </View>
+  );
+
+  const renderGrowthCardWithChart = (cardStyle = {}, chartHeight = 210) => (
+    <TouchableOpacity activeOpacity={0.95} onPress={handleRestrictedClick} style={cardStyle}>
+      <View style={[styles.growthCard, isTablet && styles.tabletGrowthCardFull]}>
+        <View style={styles.growthTopRow}>
+          <View style={{ flex: 1, marginRight: 10 }}>
+            <Text style={[styles.growthTitle, isTablet && styles.tabletGrowthTitle]}>
+              {isGlobalMode ? "Global Profit" : "Total Profit"}
+            </Text>
+            <Text
+              style={[styles.growthAmount, isTablet && styles.tabletGrowthAmount]}
+              numberOfLines={1}
+              adjustsFontSizeToFit={true}
+              minimumFontScale={0.75}
+            >
+              {isLocked ? "🔒 Locked" : `₹ ${displayProfit.toFixed(2)}`}
+            </Text>
+            <View style={styles.percentBadge}>
+              <Text style={styles.growthPercent}>↑ +18.6%</Text>
+            </View>
+            <Text style={styles.lastMonthText}>vs last month</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.monthChip, isTablet && styles.tabletMonthChip]}
+            onPress={() => {
+              if (isLocked) {
+                setShowUpgradeModal(true);
+                return;
+              }
+              setProfitView(profitView === "total" ? "month" : "total");
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={{ color: "#fff", fontWeight: "600", fontSize: isTablet ? 14 : 13 }}>
+              {profitView === "month" ? "This Month" : "Total Profit"}
+            </Text>
+            <Icon name="chevron-down" size={isTablet ? 20 : 18} color="#fff" />
+          </TouchableOpacity>
+        </View>
+
+        {renderChartBlock(chartHeight)}
+      </View>
+    </TouchableOpacity>
+  );
+
+  const renderDedicatedChartCard = (cardStyle = {}, chartHeight = 340) => (
+    <View style={[styles.growthCard, isTablet && styles.tabletDedicatedChartCard, cardStyle]}>
+      <View style={styles.chartHeaderRow}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={styles.chartIconBadge}>
+            <Icon name="chart-bell-curve-cumulative" size={20} color="#78ff9a" />
+          </View>
+          <View style={{ marginLeft: 10 }}>
+            <Text style={styles.chartMainTitle}>Profit Performance Analytics</Text>
+            <Text style={styles.chartSubTitle}>
+              {profitView === "month" ? "Monthly Cumulative Profit Trend" : "Overall Historical Profit Curve"}
+            </Text>
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={[styles.monthChip, isTablet && styles.tabletMonthChip]}
+          onPress={() => {
+            if (isLocked) {
+              setShowUpgradeModal(true);
+              return;
+            }
+            setProfitView(profitView === "total" ? "month" : "total");
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={{ color: "#fff", fontWeight: "600", fontSize: isTablet ? 14 : 13 }}>
+            {profitView === "month" ? "This Month" : "Total Profit"}
+          </Text>
+          <Icon name="chevron-down" size={isTablet ? 20 : 18} color="#fff" />
+        </TouchableOpacity>
+      </View>
+
+      {renderChartBlock(chartHeight)}
+    </View>
+  );
+
+  const renderStatCard = (title, amount, icon, isGreen, key) => {
+    if (isTablet) {
+      return (
+        <TouchableOpacity
+          key={key}
+          style={[
+            styles.tabletStatCardBase,
+            { backgroundColor: theme.card },
+          ]}
+          onPress={handleRestrictedClick}
+          activeOpacity={0.8}
+        >
+          <View style={styles.tabletStatTopRow}>
+            <Text style={styles.tabletStatTitle} numberOfLines={1}>{title}</Text>
+            <View
+              style={[
+                isGreen ? styles.iconCircleGreen : [styles.iconCircleMode, { backgroundColor: modeLightBg }],
+                styles.tabletIconCircle,
+              ]}
+            >
+              <Icon name={icon} size={20} color={isGreen ? "#16a34a" : modeAccent} />
+            </View>
+          </View>
+          <Text
+            style={[
+              isGreen ? styles.amountGreen : [styles.amount, { color: modeAccent }],
+              styles.tabletAmount,
+            ]}
+            numberOfLines={1}
+            adjustsFontSizeToFit={true}
+            minimumFontScale={0.75}
+          >
+            {amount}
+          </Text>
+        </TouchableOpacity>
+      );
+    }
+
+    return (
+      <TouchableOpacity
+        key={key}
+        style={[
+          styles.statCard,
+          { backgroundColor: theme.card },
+        ]}
+        onPress={handleRestrictedClick}
+        activeOpacity={0.8}
+      >
+        <View style={{ flex: 1, marginRight: 8 }}>
+          <Text style={styles.statTitle}>{title}</Text>
+          <Text
+            style={isGreen ? styles.amountGreen : [styles.amount, { color: modeAccent }]}
+            numberOfLines={1}
+            adjustsFontSizeToFit={true}
+            minimumFontScale={0.75}
+          >
+            {amount}
+          </Text>
+        </View>
+        <View
+          style={isGreen ? styles.iconCircleGreen : [styles.iconCircleMode, { backgroundColor: modeLightBg }]}
+        >
+          <Icon name={icon} size={18} color={isGreen ? "#16a34a" : modeAccent} />
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderStatCards = (layoutMode = "default") => {
+    const cardsData = [
+      {
+        title: "Today Sales",
+        amount: isLocked ? "🔒 Locked" : `₹ ${todaySales.toFixed(2)}`,
+        icon: "shopping-outline",
+        isGreen: false,
+      },
+      {
+        title: "Month Sales",
+        amount: isLocked ? "🔒 Locked" : `₹ ${monthSales.toFixed(2)}`,
+        icon: "calendar-month-outline",
+        isGreen: false,
+      },
+      {
+        title: "Today Profit",
+        amount: isLocked ? "🔒 Locked" : `₹ ${todayProfit.toFixed(2)}`,
+        icon: "trending-up",
+        isGreen: true,
+      },
+      {
+        title: "Month Profit",
+        amount: isLocked ? "🔒 Locked" : `₹ ${monthProfit.toFixed(2)}`,
+        icon: "cash-multiple",
+        isGreen: true,
+      },
+    ];
+
+    if (layoutMode === "row") {
+      return (
+        <View style={styles.tabletStatsRow}>
+          {cardsData.map((c, i) => (
+            <View key={i} style={{ flex: 1 }}>
+              {renderStatCard(c.title, c.amount, c.icon, c.isGreen, i)}
+            </View>
+          ))}
+        </View>
+      );
+    }
+
+    if (layoutMode === "2x2") {
+      return (
+        <View style={styles.tabletStats2x2Grid}>
+          {cardsData.map((c, i) => (
+            <View key={i} style={styles.tabletStats2x2Item}>
+              {renderStatCard(c.title, c.amount, c.icon, c.isGreen, i)}
+            </View>
+          ))}
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.statsGrid}>
+        {cardsData.map((c, i) => renderStatCard(c.title, c.amount, c.icon, c.isGreen, i))}
+      </View>
+    );
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <StatusBar
@@ -459,7 +792,7 @@ export default function Dashboard({ navigation }) {
           },
         ]}
       >
-        <View style={styles.topBar}>
+        <View style={[styles.topBar, isTablet && { maxWidth: 1220, width: "100%", alignSelf: "center" }]}>
           <View style={styles.leftTop}>
             <TouchableOpacity
               onPress={() => {
@@ -475,10 +808,10 @@ export default function Dashboard({ navigation }) {
                 <View
                   style={[
                     styles.storeIconBox,
-                    { backgroundColor: modeAccent },
+                    { backgroundColor: isRestaurant ? "#16a34a" : modeAccent },
                   ]}
                 >
-                  <Icon name="store" size={26} color="#fff" />
+                  <Icon name={isRestaurant ? "silverware-fork-knife" : "store"} size={26} color="#fff" />
                 </View>
               )}
               <View style={{ flexShrink: 1, justifyContent: "center" }}>
@@ -490,22 +823,22 @@ export default function Dashboard({ navigation }) {
                       styles.shopTitle,
                       {
                         color: theme.text,
-                        maxWidth: isTablet ? 360 : Math.max(140, width - 210),
+                        maxWidth: isTablet ? 500 : Math.max(140, width - 210),
                       },
                     ]}
                   >
-                    {shopName || (isGlobalMode ? "Global Shop" : "Local Shop")}
+                    {shopName || (isRestaurant ? "Restaurant" : isGlobalMode ? "Global Shop" : "Local Shop")}
                   </Text>
                   <Icon name="chevron-down" size={18} color={theme.text} style={{ marginLeft: 3 }} />
                 </View>
                 <View
                   style={[
                     styles.modeBadge,
-                    { backgroundColor: modeAccent },
+                    { backgroundColor: isRestaurant ? "#16a34a" : modeAccent },
                   ]}
                 >
                   <Text style={styles.modeBadgeText}>
-                    {isGlobalMode ? "GLOBAL SHOP" : "LOCAL SHOP"}
+                    {isRestaurant ? "RESTAURANT" : isGlobalMode ? "GLOBAL SHOP" : "LOCAL SHOP"}
                   </Text>
                 </View>
               </View>
@@ -660,187 +993,79 @@ export default function Dashboard({ navigation }) {
       >
         {/* PAGE 0 - DASHBOARD */}
         <View style={{ width }}>
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{
-              paddingBottom: Platform.OS === "ios" ? bottomInset + 90 : 100,
-              paddingHorizontal: horizPad,
-            }}
-          >
-            {/* 1. TOTAL SALES CARD */}
-            <TouchableOpacity activeOpacity={0.9} onPress={handleRestrictedClick}>
-              <View style={[styles.balanceCard, { backgroundColor: modeAccent, shadowColor: modeAccent }]}>
-                <View style={{ flex: 1, marginRight: 12 }}>
-                  <Text style={styles.balanceText}>{isGlobalMode ? "Global Delivered Sales" : "Total Sales"}</Text>
-                  <Text
-                    style={styles.balanceAmount}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit={true}
-                    minimumFontScale={0.75}
-                  >
-                    {isLocked ? "🔒 Locked" : `₹ ${totalSales.toFixed(2)}`}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.journalBtn}
-                  onPress={() => {
-                    if (isLocked) {
-                      setShowUpgradeModal(true);
-                      return;
-                    }
-                    navigation.navigate("JournalEntry");
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Icon name="book-outline" size={24} color={modeAccent} />
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
-
-            {/* 2. TOTAL PROFIT & LINE CHART CARD */}
-            <TouchableOpacity activeOpacity={0.95} onPress={handleRestrictedClick} style={styles.growthCardWrapper}>
-              <View style={styles.growthCard}>
-                <View style={styles.growthTopRow}>
-                  <View style={{ flex: 1, marginRight: 10 }}>
-                    <Text style={styles.growthTitle}>{isGlobalMode ? "Global Profit" : "Total Profit"}</Text>
-                    <Text
-                      style={styles.growthAmount}
-                      numberOfLines={1}
-                      adjustsFontSizeToFit={true}
-                      minimumFontScale={0.75}
-                    >
-                      {isLocked ? "🔒 Locked" : `₹ ${displayProfit.toFixed(2)}`}
-                    </Text>
-                    <View style={styles.percentBadge}>
-                      <Text style={styles.growthPercent}>↑ +18.6%</Text>
-                    </View>
-                    <Text style={styles.lastMonthText}>vs last month</Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.monthChip}
-                    onPress={() => {
-                      if (isLocked) {
-                        setShowUpgradeModal(true);
-                        return;
-                      }
-                      setProfitView(profitView === "total" ? "month" : "total");
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={{ color: "#fff", fontWeight: "600", fontSize: 13 }}>
-                      {profitView === "month" ? "This Month" : "Total Profit"}
-                    </Text>
-                    <Icon name="chevron-down" size={18} color="#fff" />
-                  </TouchableOpacity>
+          {!isTablet ? (
+            /* 📱 iPHONE ORIGINAL MOBILE VIEW */
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{
+                paddingBottom: Platform.OS === "ios" ? bottomInset + 90 : 100,
+                paddingHorizontal: horizPad,
+              }}
+            >
+              {renderBalanceCard()}
+              {renderGrowthCardWithChart(styles.growthCardWrapper, 210)}
+              {renderStatCards("default")}
+            </ScrollView>
+          ) : isLandscape ? (
+            /* 🖥️ iPAD TABLET LANDSCAPE VIEW (Balanced 2-Column Split) */
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={[
+                styles.tabletScrollContainer,
+                {
+                  paddingBottom: bottomInset + 105,
+                  paddingHorizontal: horizPad,
+                  paddingTop: 12,
+                },
+              ]}
+            >
+              <View style={styles.tabletLandscapeRow}>
+                {/* LEFT COLUMN: Total Sales Hero + 2x2 Stat Cards */}
+                <View style={styles.tabletLandscapeLeftCol}>
+                  {renderBalanceCard({ marginBottom: 16 })}
+                  {renderStatCards("2x2")}
                 </View>
 
-                <View style={{ marginTop: 20, position: "relative" }}>
-                  <LineChart
-                    style={{ height: isTablet ? 260 : 210, width: "100%" }}
-                    data={isLocked ? [0, 0] : chartData}
-                    svg={{ stroke: "#78ff9a", strokeWidth: 2.5 }}
-                    contentInset={{ top: 16, bottom: 20, left: 10, right: 48 }}
-                  >
-                    <Grid svg={{ stroke: "rgba(255,255,255,.08)", strokeDasharray: [3, 4] }} />
-                  </LineChart>
-                  <View style={styles.yAxisContainer}>
-                    {yAxisLabels.map((v, i) => (
-                      <Text key={i} style={styles.axisText}>
-                        {v >= 1000 ? (v / 1000).toFixed(0) + "K" : v}
-                      </Text>
-                    ))}
-                  </View>
+                {/* RIGHT COLUMN: Total Profit & Interactive Chart */}
+                <View style={styles.tabletLandscapeRightCol}>
+                  {renderGrowthCardWithChart({ flex: 1 }, 320)}
                 </View>
               </View>
-            </TouchableOpacity>
+            </ScrollView>
+          ) : (
+            /* 🖥️ iPAD TABLET PORTRAIT VIEW (3-Row Balanced Grid) */
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={[
+                styles.tabletScrollContainer,
+                {
+                  paddingBottom: bottomInset + 115,
+                  paddingHorizontal: horizPad,
+                  paddingTop: 12,
+                },
+              ]}
+            >
+              {/* ROW 1: Two Prominent Financial Pillars Side-by-Side */}
+              <View style={styles.tabletHeroRow}>
+                <View style={{ flex: 1 }}>
+                  {renderBalanceCard()}
+                </View>
+                <View style={{ flex: 1 }}>
+                  {renderProfitCard()}
+                </View>
+              </View>
 
-            {/* 3. 4 STAT CARDS */}
-            <View style={[styles.statsGrid, isTablet && styles.tabletStatsGrid]}>
-              <TouchableOpacity
-                style={[styles.statCard, isTablet && styles.tabletStatCard, { backgroundColor: theme.card }]}
-                onPress={handleRestrictedClick}
-                activeOpacity={0.8}
-              >
-                <View style={{ flex: 1, marginRight: 6 }}>
-                  <Text style={styles.statTitle}>Today Sales</Text>
-                  <Text
-                    style={[styles.amount, { color: modeAccent }]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit={true}
-                    minimumFontScale={0.8}
-                  >
-                    {isLocked ? "🔒 Locked" : `₹ ${todaySales.toFixed(2)}`}
-                  </Text>
-                </View>
-                <View style={[styles.iconCircleMode, { backgroundColor: modeLightBg }]}>
-                  <Icon name="shopping-outline" size={18} color={modeAccent} />
-                </View>
-              </TouchableOpacity>
+              {/* ROW 2: 4 Key Metric Stat Cards in a 4-Column Tablet Row */}
+              <View style={{ marginTop: 18 }}>
+                {renderStatCards("row")}
+              </View>
 
-              <TouchableOpacity
-                style={[styles.statCard, isTablet && styles.tabletStatCard, { backgroundColor: theme.card }]}
-                onPress={handleRestrictedClick}
-                activeOpacity={0.8}
-              >
-                <View style={{ flex: 1, marginRight: 6 }}>
-                  <Text style={styles.statTitle}>Month Sales</Text>
-                  <Text
-                    style={[styles.amount, { color: modeAccent }]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit={true}
-                    minimumFontScale={0.8}
-                  >
-                    {isLocked ? "🔒 Locked" : `₹ ${monthSales.toFixed(2)}`}
-                  </Text>
-                </View>
-                <View style={[styles.iconCircleMode, { backgroundColor: modeLightBg }]}>
-                  <Icon name="calendar-month-outline" size={18} color={modeAccent} />
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.statCard, isTablet && styles.tabletStatCard, { backgroundColor: theme.card }]}
-                onPress={handleRestrictedClick}
-                activeOpacity={0.8}
-              >
-                <View style={{ flex: 1, marginRight: 6 }}>
-                  <Text style={styles.statTitle}>Today Profit</Text>
-                  <Text
-                    style={styles.amountGreen}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit={true}
-                    minimumFontScale={0.8}
-                  >
-                    {isLocked ? "🔒 Locked" : `₹ ${todayProfit.toFixed(2)}`}
-                  </Text>
-                </View>
-                <View style={styles.iconCircleGreen}>
-                  <Icon name="trending-up" size={18} color="#16a34a" />
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.statCard, isTablet && styles.tabletStatCard, { backgroundColor: theme.card }]}
-                onPress={handleRestrictedClick}
-                activeOpacity={0.8}
-              >
-                <View style={{ flex: 1, marginRight: 6 }}>
-                  <Text style={styles.statTitle}>Month Profit</Text>
-                  <Text
-                    style={styles.amountGreen}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit={true}
-                    minimumFontScale={0.8}
-                  >
-                    {isLocked ? "🔒 Locked" : `₹ ${monthProfit.toFixed(2)}`}
-                  </Text>
-                </View>
-                <View style={styles.iconCircleGreen}>
-                  <Icon name="cash-multiple" size={18} color="#16a34a" />
-                </View>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
+              {/* ROW 3: Dedicated Profit Performance Analytics Chart */}
+              <View style={{ marginTop: 18 }}>
+                {renderDedicatedChartCard({}, 360)}
+              </View>
+            </ScrollView>
+          )}
         </View>
 
         {/* PAGE 1 - SALES HISTORY */}
@@ -853,9 +1078,9 @@ export default function Dashboard({ navigation }) {
           <PurchaseHistory appMode={isGlobalMode ? "global" : "local"} />
         </View>
 
-        {/* PAGE 3 - INVENTORY & SCAN */}
+        {/* PAGE 3 - INVENTORY */}
         <View style={{ width }}>
-          <InventoryScreen appMode={isGlobalMode ? "global" : "local"} />
+          <InventoryScreen appMode={isGlobalMode ? "global" : "local"} isRestaurant={isRestaurant} navigation={navigation} />
         </View>
       </ScrollView>
 
@@ -891,7 +1116,9 @@ export default function Dashboard({ navigation }) {
       {showScanOptions && (
         <View style={styles.modalBg}>
           <View style={styles.newModalBox}>
-            <Text style={styles.modalTitle}>Choose Scan Type</Text>
+            <Text style={styles.modalTitle}>
+              {isRestaurant ? "Choose Action" : "Choose Scan Type"}
+            </Text>
             <TouchableOpacity
               style={styles.modalOption}
               onPress={() => {
@@ -900,20 +1127,50 @@ export default function Dashboard({ navigation }) {
               }}
               activeOpacity={0.8}
             >
-              <Icon name="cash" size={22} color="#16a34a" />
-              <Text style={styles.modalOptionText}>Sales Scan</Text>
+              <Icon name={isRestaurant ? "cash-register" : "cash"} size={22} color="#16a34a" />
+              <Text style={styles.modalOptionText}>
+                {isRestaurant ? "Sales Billing" : "Sales Scan"}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => {
-                setShowScanOptions(false);
-                navigation.navigate("Scan");
-              }}
-              activeOpacity={0.8}
-            >
-              <Icon name="cube-scan" size={22} color={modeAccent} />
-              <Text style={styles.modalOptionText}>Purchase Scan</Text>
-            </TouchableOpacity>
+            {isRestaurant ? (
+              <>
+                <TouchableOpacity
+                  style={styles.modalOption}
+                  onPress={() => {
+                    setShowScanOptions(false);
+                    navigation.navigate("Scan", { isPurchase: true });
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="cube-scan" size={22} color="#6366f1" />
+                  <Text style={styles.modalOptionText}>Purchase Scan</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.modalOption}
+                  onPress={() => {
+                    setShowScanOptions(false);
+                    navigation.navigate("AddFoods");
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Icon name="food-fork-drink" size={22} color="#16a34a" />
+                  <Text style={styles.modalOptionText}>Add Foods</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  setShowScanOptions(false);
+                  navigation.navigate("Scan");
+                }}
+                activeOpacity={0.8}
+              >
+                <Icon name="cube-scan" size={22} color={modeAccent} />
+                <Text style={styles.modalOptionText}>Purchase Scan</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.closeBtn} onPress={() => setShowScanOptions(false)} activeOpacity={0.8}>
               <Text style={{ color: "#fff", fontWeight: "700" }}>Cancel</Text>
             </TouchableOpacity>
@@ -922,40 +1179,64 @@ export default function Dashboard({ navigation }) {
       )}
 
       {/* 🧭 BOTTOM NAV */}
-      <View style={[styles.bottomNavWrapper, { bottom: bottomInset }]} pointerEvents="box-none">
+      <View
+        style={[
+          styles.bottomNavWrapper,
+          {
+            bottom: isTablet ? Math.max(12, insets.bottom + 6) : bottomInset,
+          },
+        ]}
+        pointerEvents="box-none"
+      >
         <View
           style={[
             styles.bottomNav,
+            isTablet && styles.tabletBottomNav,
             {
               backgroundColor: theme.card,
-              width: isTablet ? Math.min(560, width - 48) : width - horizPad * 2,
+              width: isTablet ? Math.min(680, width - 64) : width - horizPad * 2,
             },
           ]}
         >
           <TouchableOpacity onPress={() => goToPage(0)} style={styles.navItem} activeOpacity={0.7}>
-            <Icon name="home" size={24} color={isActive(0) ? modeAccent : "#94a3b8"} />
-            <Text style={isActive(0) ? [styles.navText, { color: modeAccent }] : styles.navTextInactive}>Home</Text>
+            <Icon name="home" size={isTablet ? 26 : 24} color={isActive(0) ? modeAccent : "#94a3b8"} />
+            <Text style={isActive(0) ? [styles.navText, isTablet && styles.tabletNavText, { color: modeAccent }] : [styles.navTextInactive, isTablet && styles.tabletNavText]}>
+              Home
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity onPress={() => goToPage(1)} style={styles.navItem} activeOpacity={0.7}>
-            <Icon name="chart-line" size={24} color={isActive(1) ? modeAccent : "#94a3b8"} />
-            <Text style={isActive(1) ? [styles.navText, { color: modeAccent }] : styles.navTextInactive}>Sales</Text>
+            <Icon name="chart-line" size={isTablet ? 26 : 24} color={isActive(1) ? modeAccent : "#94a3b8"} />
+            <Text style={isActive(1) ? [styles.navText, isTablet && styles.tabletNavText, { color: modeAccent }] : [styles.navTextInactive, isTablet && styles.tabletNavText]}>
+              Sales
+            </Text>
           </TouchableOpacity>
 
-          <View style={styles.centerGap} />
+          <View style={isTablet ? styles.tabletCenterGap : styles.centerGap} />
 
           <TouchableOpacity onPress={() => goToPage(2)} style={styles.navItem} activeOpacity={0.7}>
-            <Icon name="cube-outline" size={24} color={isActive(2) ? modeAccent : "#94a3b8"} />
-            <Text style={isActive(2) ? [styles.navText, { color: modeAccent }] : styles.navTextInactive}>Purchase</Text>
+            <Icon name="cube-outline" size={isTablet ? 26 : 24} color={isActive(2) ? modeAccent : "#94a3b8"} />
+            <Text style={isActive(2) ? [styles.navText, isTablet && styles.tabletNavText, { color: modeAccent }] : [styles.navTextInactive, isTablet && styles.tabletNavText]}>
+              Purchase
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity onPress={() => goToPage(3)} style={styles.navItem} activeOpacity={0.7}>
-            <Icon name="archive-outline" size={24} color={isActive(3) ? modeAccent : "#94a3b8"} />
-            <Text style={isActive(3) ? [styles.navText, { color: modeAccent }] : styles.navTextInactive}>Inventory</Text>
+            <Icon name="archive-outline" size={isTablet ? 26 : 24} color={isActive(3) ? modeAccent : "#94a3b8"} />
+            <Text style={isActive(3) ? [styles.navText, isTablet && styles.tabletNavText, { color: modeAccent }] : [styles.navTextInactive, isTablet && styles.tabletNavText]}>
+              Inventory
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.scanBtn, { backgroundColor: modeAccent, shadowColor: modeAccent }]}
+            style={[
+              styles.scanBtn,
+              isTablet && styles.tabletScanBtn,
+              {
+                backgroundColor: isRestaurant ? "#16a34a" : modeAccent,
+                shadowColor: isRestaurant ? "#16a34a" : modeAccent,
+              },
+            ]}
             onPress={() => {
               if (isLocked) {
                 setShowUpgradeModal(true);
@@ -965,7 +1246,7 @@ export default function Dashboard({ navigation }) {
             }}
             activeOpacity={0.85}
           >
-            <Icon name="qrcode-scan" size={28} color="#fff" />
+            <Icon name={isRestaurant ? "silverware-fork-knife" : "qrcode-scan"} size={isTablet ? 28 : 26} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
@@ -1364,4 +1645,188 @@ const styles = StyleSheet.create({
   exitCancelText: { fontSize: 15, fontWeight: "700" },
   exitConfirmBtn: { flex: 1.2, flexDirection: "row", paddingVertical: 12, borderRadius: 12, backgroundColor: "#ef4444", alignItems: "center", justifyContent: "center" },
   exitConfirmText: { color: "#ffffff", fontSize: 15, fontWeight: "700" },
+
+  // ==========================================
+  // TABLET RESPONSIVE STYLES
+  // ==========================================
+  tabletScrollContainer: {
+    maxWidth: 1220,
+    width: "100%",
+    alignSelf: "center",
+  },
+  tabletBalanceCard: {
+    paddingVertical: 24,
+    paddingHorizontal: 24,
+    borderRadius: 24,
+    minHeight: 140,
+  },
+  tabletBalanceText: {
+    fontSize: 16,
+    letterSpacing: 0.2,
+  },
+  tabletBalanceAmount: {
+    fontSize: 34,
+    marginTop: 8,
+  },
+  tabletGrossBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.22)",
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  tabletGrossText: {
+    color: "#ffffff",
+    fontSize: 11.5,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  tabletJournalBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+  },
+  tabletProfitCard: {
+    paddingVertical: 24,
+    paddingHorizontal: 24,
+    borderRadius: 24,
+    minHeight: 140,
+    justifyContent: "center",
+  },
+  tabletGrowthTitle: {
+    fontSize: 18,
+  },
+  tabletGrowthAmount: {
+    fontSize: 34,
+    marginTop: 8,
+  },
+  tabletMonthChip: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  tabletGrowthCardFull: {
+    borderRadius: 26,
+    paddingVertical: 24,
+    paddingHorizontal: 24,
+  },
+  tabletDedicatedChartCard: {
+    borderRadius: 26,
+    paddingVertical: 24,
+    paddingHorizontal: 24,
+  },
+  chartHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  chartIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "rgba(120,255,154,0.15)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  chartMainTitle: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  chartSubTitle: {
+    color: "#94a3b8",
+    fontSize: 12.5,
+    marginTop: 2,
+  },
+  tabletHeroRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 18,
+  },
+  tabletStatsRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 14,
+  },
+  tabletStats2x2Grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    rowGap: 14,
+  },
+  tabletStats2x2Item: {
+    width: "48.5%",
+  },
+  tabletStatCardBase: {
+    width: "100%",
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    minHeight: 112,
+    justifyContent: "space-between",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  tabletStatTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    marginBottom: 8,
+  },
+  tabletStatTitle: {
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: "600",
+    flex: 1,
+    marginRight: 6,
+  },
+  tabletAmount: {
+    fontSize: 23,
+    fontWeight: "800",
+  },
+  tabletIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  tabletLandscapeRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 22,
+  },
+  tabletLandscapeLeftCol: {
+    flex: 1,
+    minWidth: 400,
+  },
+  tabletLandscapeRightCol: {
+    flex: 1.15,
+    minWidth: 460,
+  },
+  tabletBottomNav: {
+    height: 76,
+    borderRadius: 28,
+  },
+  tabletNavText: {
+    fontSize: 12,
+    marginTop: 5,
+  },
+  tabletScanBtn: {
+    top: -27,
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    marginLeft: -33,
+  },
+  tabletCenterGap: {
+    width: 76,
+  },
 });

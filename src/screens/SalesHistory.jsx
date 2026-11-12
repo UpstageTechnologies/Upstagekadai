@@ -10,9 +10,11 @@ import {
   Platform,
   Alert,
   StatusBar,
-  useWindowDimensions
+  useWindowDimensions,
+  KeyboardAvoidingView,
+  SafeAreaView
 } from "react-native";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 
 import { db } from "../utils/firebaseConfig";
 import { collection, onSnapshot, doc, getDoc, setDoc } from "firebase/firestore";
@@ -23,7 +25,9 @@ import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { getSession } from "../utils/session";
 import { ThemeContext } from "../theme/ThemeContext";
 
-export default function SalesHistory({ appMode }) {
+export default function SalesHistory({ appMode, navigation: propNavigation }) {
+  const hookNavigation = useNavigation();
+  const navigation = propNavigation || hookNavigation;
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
@@ -372,11 +376,22 @@ export default function SalesHistory({ appMode }) {
       >
         {/* Top Header */}
         <View style={styles.topHeader}>
-          <View>
-            <Text style={[styles.pageTitle, { color: theme.text }]}>Sales Register</Text>
-            <Text style={styles.pageSubtitle}>
-              {currentMode === "global" ? "🌐 Global Shop" : "🏬 Local Counter"}
-            </Text>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            {Boolean(navigation?.canGoBack?.()) && (
+              <TouchableOpacity 
+                onPress={() => navigation.goBack()}
+                style={{ marginRight: 10, padding: 6, borderRadius: 20, backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }}
+                activeOpacity={0.7}
+              >
+                <Icon name="arrow-left" size={22} color={theme.text} />
+              </TouchableOpacity>
+            )}
+            <View>
+              <Text style={[styles.pageTitle, { color: theme.text }]}>Sales Register</Text>
+              <Text style={styles.pageSubtitle}>
+                {currentMode === "global" ? "🌐 Global Shop" : "🏬 Local Counter"}
+              </Text>
+            </View>
           </View>
           <View style={styles.headerTag}>
             <Text style={styles.headerTagText}>{filteredGroupedSales.length} Days</Text>
@@ -705,18 +720,22 @@ export default function SalesHistory({ appMode }) {
 
       {/* CLOSE DAY SCREEN MODAL */}
       <Modal visible={showDayModal} animationType="slide" onRequestClose={() => setShowDayModal(false)}>
-        <View style={[styles.modalScreen, { backgroundColor: theme.background }]}>
-          <View style={[styles.modalTopNav, { borderColor: theme.border }]}>
-            <TouchableOpacity onPress={() => setShowDayModal(false)} style={styles.navCloseBtn}>
-              <Icon name="arrow-left" size={22} color={theme.text} />
-            </TouchableOpacity>
-            <View style={{ marginLeft: 12 }}>
-              <Text style={[styles.navTitle, { color: theme.text }]}>Day End Closing</Text>
-              <Text style={styles.navSubTitle}>{selectedDayData?.dateLabel}</Text>
+        <SafeAreaView style={[styles.modalScreen, { backgroundColor: theme.background }]}>
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={{ flex: 1 }}
+          >
+            <View style={[styles.modalTopNav, { borderColor: theme.border }]}>
+              <TouchableOpacity onPress={() => setShowDayModal(false)} style={styles.navCloseBtn}>
+                <Icon name="arrow-left" size={22} color={theme.text} />
+              </TouchableOpacity>
+              <View style={{ marginLeft: 12 }}>
+                <Text style={[styles.navTitle, { color: theme.text }]}>Day End Closing</Text>
+                <Text style={styles.navSubTitle}>{selectedDayData?.dateLabel}</Text>
+              </View>
             </View>
-          </View>
 
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 18, paddingBottom: 60 }}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 18, paddingBottom: 60 }} keyboardShouldPersistTaps="handled">
             {/* Net Collections Hero */}
             <View style={styles.heroBox}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -878,7 +897,8 @@ export default function SalesHistory({ appMode }) {
               <Text style={styles.closeDayBtnText}>Record & Close Day</Text>
             </TouchableOpacity>
           </ScrollView>
-        </View>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
       </Modal>
 
       {/* DETAILED BILL MODAL */}

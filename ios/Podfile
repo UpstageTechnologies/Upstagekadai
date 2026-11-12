@@ -66,5 +66,36 @@ target 'MyShopApp' do
         end
       end
     end
+
+    # Wire aggregate prebuilt targets as dependencies of the main pods target so Xcode build order is preserved
+    main_pods_target = installer.pods_project.targets.find { |t| t.name == 'Pods-MyShopApp' }
+    if main_pods_target
+      ['React-Core-prebuilt', 'ReactNativeDependencies', 'hermes-engine'].each do |dep_name|
+        dep_target = installer.pods_project.targets.find { |t| t.name == dep_name }
+        if dep_target && !main_pods_target.dependencies.any? { |d| d.target == dep_target }
+          main_pods_target.add_dependency(dep_target)
+        end
+      end
+    end
+
+    # Ensure all replace scripts in Xcode build phases execute from PODS_ROOT
+    installer.pods_project.targets.each do |target|
+      target.build_phases.each do |phase|
+        if phase.respond_to?(:shell_script) && phase.name =~ /Replace (React Native|Hermes)/
+          unless phase.shell_script.include?('cd "$PODS_ROOT"')
+            phase.shell_script = "cd \"$PODS_ROOT\"\n" + phase.shell_script
+          end
+        end
+      end
+    end
+
+    # Ensure prebuilt React Native core, dependencies, and Hermes match Release configuration
+    rn_version = "0.85.2"
+    hermes_version = "250829098.0.10"
+    pods_root = Pod::Config.instance.project_pods_root
+    rn_path = File.expand_path(config[:reactNativePath], Pod::Config.instance.installation_root)
+    system("(cd \"#{pods_root}\" && node \"#{rn_path}/scripts/replace-rncore-version.js\" -c Release -r \"#{rn_version}\" -p \"#{pods_root}\")")
+    system("(cd \"#{pods_root}\" && node \"#{rn_path}/third-party-podspecs/replace_dependencies_version.js\" -c Release -r \"#{rn_version}\" -p \"#{pods_root}\")")
+    system("(cd \"#{pods_root}\" && node \"#{rn_path}/sdks/hermes-engine/utils/replace_hermes_version.js\" -c Release -r \"#{hermes_version}\" -p \"#{pods_root}\")")
   end
 end

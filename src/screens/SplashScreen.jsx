@@ -4,6 +4,7 @@ import React, {
 
 import {
   View,
+  Image,
   ActivityIndicator,
 } from "react-native";
 
@@ -40,33 +41,36 @@ export default function SplashScreen({
       return;
     }
 
-onAuthStateChanged(auth, (user) => {
+    // If session is a staff account (waiter, kitchen, or employee)
+    if (session.staffId) {
+      if (session.role === "waiter") {
+        navigation.replace("WaiterOrder");
+      } else if (session.role === "kitchen") {
+        navigation.replace("KitchenDisplay");
+      } else {
+        navigation.replace("Dashboard");
+      }
+      return;
+    }
 
-  if (user) {
-
-    navigation.reset({
-      index: 0,
-      routes: [
-        {
-         name:"Dashboard",
-        },
-      ],
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        navigation.reset({
+          index: 0,
+          routes: [
+            {
+              name: "Dashboard",
+            },
+          ],
+        });
+      } else {
+        navigation.replace("Login");
+      }
     });
-
-  } else {
-
-    navigation.replace(
-      "Login"
-    );
-
-  }
-
-});
 
   };
 
   return (
-
     <View
       style={{
         flex: 1,
@@ -75,12 +79,19 @@ onAuthStateChanged(auth, (user) => {
         backgroundColor: "#fff",
       }}
     >
-
+      <Image
+        source={require("../assets/logo.png")}
+        style={{
+          width: 150,
+          height: 150,
+          resizeMode: "contain",
+          marginBottom: 24,
+        }}
+      />
       <ActivityIndicator
         size="large"
         color="#2563eb"
       />
-
     </View>
   );
 }

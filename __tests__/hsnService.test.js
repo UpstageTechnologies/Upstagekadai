@@ -6,6 +6,9 @@ import {
   suggestHSNCode,
   isOnlineSourceConfigured,
   configureOnlineSource,
+  getHSNEntry,
+  deriveCategoryFromHSN,
+  matchProductSearch,
 } from '../src/services/hsnService';
 
 describe('HSN Code and Classification Service Tests', () => {
@@ -214,4 +217,75 @@ describe('HSN Code and Classification Service Tests', () => {
       expect(isOnlineSourceConfigured().configured).toBe(false);
     });
   });
+
+  describe('6. Category Derivation & Intelligent Search Matching', () => {
+    test('Derives category and subcategory from HSN code automatically', () => {
+      const innerwearCat = deriveCategoryFromHSN('61071100');
+      expect(innerwearCat.mainCategory).toBe('Garments');
+      expect(innerwearCat.subcategory).toBe('Innerwear');
+      expect(innerwearCat.fullCategory).toBe('Garments / Innerwear');
+      expect(innerwearCat.keywords).toContain('underwear');
+      expect(innerwearCat.keywords).toContain('boxer');
+      expect(innerwearCat.keywords).toContain('jockey');
+
+      const groceryCat = deriveCategoryFromHSN('10063020');
+      expect(groceryCat.mainCategory).toBe('Grocery');
+      expect(groceryCat.subcategory).toBe('Cereals');
+    });
+
+    test('getHSNEntry retrieves full verified classification entry synchronously', () => {
+      const entry = getHSNEntry('61071100');
+      expect(entry).not.toBeNull();
+      expect(entry.category).toBe('Garments / Innerwear');
+      expect(entry.gstRate).toBe('5%');
+      expect(entry.description).toContain('underpants');
+    });
+
+    test('Matches product when user searches "underware" (phonetic misspelling)', () => {
+      const product = {
+        itemName: 'Jocky',
+        brand: 'Jocky',
+        subName: 'Boxi fit',
+        category: 'General',
+        hsnCode: '61071100',
+      };
+
+      // Searching 'underware' should find the product because HSN has 'underwear' in keywords/category
+      expect(matchProductSearch(product, 'underware')).toBe(true);
+      expect(matchProductSearch(product, 'underwear')).toBe(true);
+      expect(matchProductSearch(product, 'innerwear')).toBe(true);
+      expect(matchProductSearch(product, 'boxer')).toBe(true);
+      expect(matchProductSearch(product, 'boxi')).toBe(true);
+      expect(matchProductSearch(product, 'jocky')).toBe(true);
+      expect(matchProductSearch(product, 'jockey')).toBe(true);
+      expect(matchProductSearch(product, '61071100')).toBe(true);
+      expect(matchProductSearch(product, 'garments')).toBe(true);
+    });
+
+    test('Does not match unrelated products', () => {
+      const riceProduct = {
+        itemName: 'Basmati Rice',
+        brand: 'India Gate',
+        category: 'Grocery',
+        hsnCode: '10063020',
+      };
+
+      expect(matchProductSearch(riceProduct, 'underware')).toBe(false);
+      expect(matchProductSearch(riceProduct, 'rice')).toBe(true);
+    });
+
+    test('Handles multi-token search terms correctly', () => {
+      const product = {
+        itemName: 'Jocky Underwear',
+        brand: 'Jocky',
+        subName: 'Boxi fit',
+        category: 'Garments / Innerwear',
+        hsnCode: '61071100',
+      };
+
+      expect(matchProductSearch(product, 'jocky underware')).toBe(true);
+      expect(matchProductSearch(product, 'jockey boxi')).toBe(true);
+    });
+  });
 });
+

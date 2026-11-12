@@ -3,22 +3,25 @@ import RazorpayCheckout from "react-native-razorpay";
 import { useTheme } from "../theme/ThemeContext";
 import bluetoothPrinter from "../utils/bluetoothPrinter";
 import RNPrint from "react-native-print";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, Modal, Image, SafeAreaView, StatusBar, Platform, Keyboard, useWindowDimensions } from "react-native";
 import { NativeModules } from "react-native";
-import { Camera, useCameraDevice, useCodeScanner } from "react-native-vision-camera";
+import { Camera, useCameraDevice, useCodeScanner, useCameraPermission } from "react-native-vision-camera";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { WebView } from "react-native-webview";
 import DropDownPicker from 'react-native-dropdown-picker';
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
 import { auth, db } from "../utils/firebaseConfig";
+import { onAuthStateChanged } from "firebase/auth";
 import { getEffectiveProductPrice } from "../utils/pricing";
 import { addDoc, serverTimestamp, collection, onSnapshot, doc, updateDoc, getDocs, deleteDoc, setDoc } from "firebase/firestore";
 import QRCode from "react-native-qrcode-svg";
-import { onAuthStateChanged } from "firebase/auth";
+import RestaurantSalesBilling from "./restaurant/RestaurantSalesBilling";
+import { fetchAndCacheShopType, getCachedShopType, isRestaurantShop } from "../utils/restaurantMode";
+import { matchProductSearch } from "../services/hsnService";
 
-export default function SalesScreen({ navigation }) {
+function RetailSalesScreen({ navigation, route }) {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
@@ -32,7 +35,7 @@ export default function SalesScreen({ navigation }) {
   const [total, setTotal] = useState(0);
   const [showReview, setShowReview] = useState(false);
   const [paymentMode, setPaymentMode] = useState("CASH");
-  const [hasPermission, setHasPermission] = useState(false);
+  const { hasPermission, requestPermission } = useCameraPermission();
   const [isActive, setIsActive] = useState(true);
   const [torch, setTorch] = useState("off");
 
@@ -85,7 +88,9 @@ export default function SalesScreen({ navigation }) {
   const [userRazorpayKeyId, setUserRazorpayKeyId] = useState("");
   const [currentQrMode, setCurrentQrMode] = useState("generated");
   const [search, setSearch] = useState("");
-  const { darkMode, theme } = useTheme();
+  const themeContext = useTheme();
+  const darkMode = Boolean(themeContext?.darkMode);
+  const theme = themeContext?.theme || { background: "#f8fafc", card: "#ffffff", text: "#0f172a" };
   const [shopAddress, setShopAddress] = useState("");
   const [shopPhone, setShopPhone] = useState("");
   const [receiptPaperSize, setReceiptPaperSize] = useState("58mm");
@@ -99,6 +104,19 @@ export default function SalesScreen({ navigation }) {
   const [enableReceiptPrinting, setEnableReceiptPrinting] = useState(true);
   const [printerCopies, setPrinterCopies] = useState("1");
 
+  const isFocused = useIsFocused();
+  const isCameraActive = Boolean(
+    isFocused &&
+    isActive &&
+    !showReview &&
+    !showReceiptModal &&
+    !modalVisible &&
+    !showHoldModal &&
+    !showResumeModal &&
+    !showUpiModal &&
+    !newCategoryModal
+  );
+
   // =========================================================
   // 🔌 PROFESSIONAL BACKGROUND HARDWARE SCANNER ENGINE
   // =========================================================
@@ -109,8 +127,12 @@ export default function SalesScreen({ navigation }) {
   const scanDebounceTimerRef = useRef(null);
 
   const focusGunScanner = () => {
-    hiddenScannerRef.current?.focus();
-    Keyboard.dismiss();
+    try {
+      hiddenScannerRef.current?.focus();
+      Keyboard.dismiss();
+    } catch (e) {
+      // safe guard
+    }
   };
 
   useFocusEffect(
@@ -141,7 +163,7 @@ export default function SalesScreen({ navigation }) {
 
   // Real-time Cloud Cart Sync Helper
   const syncToCloudCart = async (newBill) => {
-    const user = auth.currentUser;
+    const user = auth?.currentUser;
     if (!user) return;
     try {
       const cartRef = doc(db, "users", user.uid, "active_cart", "current");
@@ -155,47 +177,75 @@ export default function SalesScreen({ navigation }) {
     }
   };
 
+  useEffect(() => {
+    if (route?.params?.showReview !== undefined) {
+      setShowReview(Boolean(route.params.showReview));
+    }
+    if (route?.params?.showReceiptModal !== undefined) {
+      setShowReceiptModal(Boolean(route.params.showReceiptModal));
+    }
+    if (route?.params?.showUpiModal !== undefined) {
+      setShowUpiModal(Boolean(route.params.showUpiModal));
+    }
+  }, [route?.params?.showReview, route?.params?.showReceiptModal, route?.params?.showUpiModal]);
+
   // Real-time Cloud Cart Listener
   useEffect(() => {
+    let unsubCart = null;
     const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (!user) return;
+      if (unsubCart) {
+        unsubCart();
+        unsubCart = null;
+      }
+      if (!user) {
+        setBill([]);
+        return;
+      }
       const cartRef = doc(db, "users", user.uid, "active_cart", "current");
-      const unsubCart = onSnapshot(cartRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
+      unsubCart = onSnapshot(
+        cartRef,
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
 
-          if (data.lastConfirmedSale && data.lastConfirmedSale.timestamp) {
-            const sale = data.lastConfirmedSale;
-            const now = Date.now();
-            const isJustConfirmed = (now - sale.timestamp) < 8000;
+            if (data.lastConfirmedSale && data.lastConfirmedSale.timestamp) {
+              const sale = data.lastConfirmedSale;
+              const now = Date.now();
+              const isJustConfirmed = (now - sale.timestamp) < 8000;
 
-            if (sale.timestamp > lastProcessedSaleTimestampRef.current && isJustConfirmed) {
-              lastProcessedSaleTimestampRef.current = sale.timestamp;
-              setCurrentBillNo(sale.billNo || "");
-              setCurrentBillDate(sale.billDate || "");
-              setReceiptBill(sale.items || []);
-              setReceiptTotal(Number(sale.total || sale.totalAmount || 0));
-              setBill([]);
-              setShowReview(false);
-              setShowReceiptModal(true);
-              return;
+              if (sale.timestamp > lastProcessedSaleTimestampRef.current && isJustConfirmed) {
+                lastProcessedSaleTimestampRef.current = sale.timestamp;
+                setCurrentBillNo(sale.billNo || "");
+                setCurrentBillDate(sale.billDate || "");
+                setReceiptBill(sale.items || []);
+                setReceiptTotal(Number(sale.total || sale.totalAmount || 0));
+                setBill([]);
+                setShowReview(false);
+                setShowReceiptModal(true);
+                return;
+              }
             }
-          }
 
-          setBill(data.items || []);
-        } else {
-          setBill([]);
+            setBill(data.items || []);
+          } else {
+            setBill([]);
+          }
+        },
+        (error) => {
+          console.log("Cart onSnapshot listener error:", error);
         }
-      });
-      return () => unsubCart();
+      );
     });
-    return () => unsubAuth();
+    return () => {
+      if (unsubCart) unsubCart();
+      unsubAuth();
+    };
   }, []);
 
   useEffect(() => {
     const loadHeldOrders = async () => {
       try {
-        const user = auth.currentUser;
+        const user = auth?.currentUser;
         if (!user) return;
         const savedHeld = await AsyncStorage.getItem(`held_orders_${user.uid}`);
         if (savedHeld) {
@@ -210,7 +260,7 @@ export default function SalesScreen({ navigation }) {
 
   const saveHeldOrdersToStorage = async (orders) => {
     try {
-      const user = auth.currentUser;
+      const user = auth?.currentUser;
       if (!user) return;
       await AsyncStorage.setItem(`held_orders_${user.uid}`, JSON.stringify(orders));
     } catch (err) {
@@ -221,53 +271,70 @@ export default function SalesScreen({ navigation }) {
   useFocusEffect(
     React.useCallback(() => {
       setIsActive(true);
-      const user = auth.currentUser;
+      const user = auth?.currentUser;
       if (!user) return;
 
       let unsubscribeInventory;
       let unsubscribeCategories;
+      let isSubscribed = true;
 
       const setupListeners = async () => {
-        const savedMode = (await AsyncStorage.getItem("app_mode")) || "local";
-        setCurrentMode(savedMode);
+        try {
+          const savedMode = (await AsyncStorage.getItem("app_mode")) || "local";
+          if (!isSubscribed) return;
+          setCurrentMode(savedMode);
 
-        const savedQr = await AsyncStorage.getItem(`shop_qr_code_${user.uid}`);
-        if (savedQr) {
-          setSavedSettingsQr(savedQr);
-        }
-
-        const savedReceiptLogo = await AsyncStorage.getItem(`receipt_logo_${user.uid}`);
-        if (savedReceiptLogo) {
-          setReceiptLogoUri(savedReceiptLogo);
-        }
-
-        const inventoryCollection = savedMode === "global" ? "global_inventory" : "inventory";
-        const categoriesCollection = savedMode === "global" ? "global_categories" : "categories";
-
-        unsubscribeInventory = onSnapshot(
-          collection(db, "users", user.uid, inventoryCollection),
-          (snap) => {
-            setInventory(snap.docs.map((d) => ({
-              id: d.id,
-              fromDB: true,
-              ...d.data()
-            })));
+          const savedQr = await AsyncStorage.getItem(`shop_qr_code_${user.uid}`);
+          if (!isSubscribed) return;
+          if (savedQr) {
+            setSavedSettingsQr(savedQr);
           }
-        );
 
-        unsubscribeCategories = onSnapshot(
-          collection(db, "users", user.uid, categoriesCollection),
-          (snap) => {
-            const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            setCategories(data);
-            setCategoryItems(data.map(cat => ({ label: cat.name, value: cat.name, id: cat.id })));
+          const savedReceiptLogo = await AsyncStorage.getItem(`receipt_logo_${user.uid}`);
+          if (!isSubscribed) return;
+          if (savedReceiptLogo) {
+            setReceiptLogoUri(savedReceiptLogo);
           }
-        );
+
+          const inventoryCollection = savedMode === "global" ? "global_inventory" : "inventory";
+          const categoriesCollection = savedMode === "global" ? "global_categories" : "categories";
+
+          unsubscribeInventory = onSnapshot(
+            collection(db, "users", user.uid, inventoryCollection),
+            (snap) => {
+              if (!isSubscribed) return;
+              setInventory(snap.docs.map((d) => ({
+                id: d.id,
+                fromDB: true,
+                ...d.data()
+              })));
+            },
+            (err) => {
+              console.log("SalesScreen inventory onSnapshot error:", err);
+            }
+          );
+
+          unsubscribeCategories = onSnapshot(
+            collection(db, "users", user.uid, categoriesCollection),
+            (snap) => {
+              if (!isSubscribed) return;
+              const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+              setCategories(data);
+              setCategoryItems(data.map(cat => ({ label: cat.name, value: cat.name, id: cat.id })));
+            },
+            (err) => {
+              console.log("SalesScreen categories onSnapshot error:", err);
+            }
+          );
+        } catch (e) {
+          console.log("setupListeners error:", e);
+        }
       };
 
       setupListeners();
 
       return () => {
+        isSubscribed = false;
         setIsActive(false);
         if (unsubscribeInventory) unsubscribeInventory();
         if (unsubscribeCategories) unsubscribeCategories();
@@ -276,57 +343,75 @@ export default function SalesScreen({ navigation }) {
   );
 
   useEffect(() => {
+    let unsubUserSnap = null;
     const unsub = onAuthStateChanged(
       auth,
       async (user) => {
+        if (unsubUserSnap) {
+          unsubUserSnap();
+          unsubUserSnap = null;
+        }
         if (!user) return;
 
-        const savedReceiptLogo = await AsyncStorage.getItem(`receipt_logo_${user.uid}`);
-        if (savedReceiptLogo) {
-          setReceiptLogoUri(savedReceiptLogo);
+        try {
+          const savedReceiptLogo = await AsyncStorage.getItem(`receipt_logo_${user.uid}`);
+          if (savedReceiptLogo) {
+            setReceiptLogoUri(savedReceiptLogo);
+          }
+        } catch (e) {
+          console.log("Failed reading logo", e);
         }
 
         const userRef = doc(db, "users", user.uid);
-        return onSnapshot(userRef, (snap) => {
-          const data = snap.data();
-          if (data) {
-            setShopName(data.shopName || "MY SHOP");
-            if (data.address) setShopAddress(data.address);
-            if (data.phone) setShopPhone(data.phone);
-            setGstNumber(data.gstNumber || "");
-            setGstEnabled(data.gstEnabled ?? false);
-            setGstPercentage(data.gstPercentage || "18");
-            setShopUpiId(data.upiId || "");
-            setUserRazorpayKeyId(data.razorpayKeyId || "");
-            setCurrentQrMode(data.qrMode || "generated");
-            setCashEnabled(data.cashEnabled ?? true);
-            setUpiEnabled(data.upiEnabled ?? true);
-            setRazorpayEnabled(data.razorpayEnabled ?? true);
+        unsubUserSnap = onSnapshot(
+          userRef,
+          (snap) => {
+            const data = snap.data();
+            if (data) {
+              setShopName(data.shopName || "MY SHOP");
+              if (data.address) setShopAddress(data.address);
+              if (data.phone) setShopPhone(data.phone);
+              setGstNumber(data.gstNumber || "");
+              setGstEnabled(data.gstEnabled ?? false);
+              setGstPercentage(data.gstPercentage || "18");
+              setShopUpiId(data.upiId || "");
+              setUserRazorpayKeyId(data.razorpayKeyId || "");
+              setCurrentQrMode(data.qrMode || "generated");
+              setCashEnabled(data.cashEnabled ?? true);
+              setUpiEnabled(data.upiEnabled ?? true);
+              setRazorpayEnabled(data.razorpayEnabled ?? true);
 
-            if (data.receiptConfig) {
-              setReceiptStoreLogo(data.receiptConfig.storeLogo ?? false);
-              setReceiptHeader(data.receiptConfig.header || "");
-              setReceiptFooter(data.receiptConfig.footer || "Thank you!");
-              if (data.receiptConfig.paperSize) setReceiptPaperSize(data.receiptConfig.paperSize);
-              if (data.receiptConfig.showQr !== undefined) setReceiptShowQr(data.receiptConfig.showQr);
+              if (data.receiptConfig) {
+                setReceiptStoreLogo(data.receiptConfig.storeLogo ?? false);
+                setReceiptHeader(data.receiptConfig.header || "");
+                setReceiptFooter(data.receiptConfig.footer || "Thank you!");
+                if (data.receiptConfig.paperSize) setReceiptPaperSize(data.receiptConfig.paperSize);
+                if (data.receiptConfig.showQr !== undefined) setReceiptShowQr(data.receiptConfig.showQr);
+              }
+
+              if (data.printerConfig) {
+                setPrintAutomatically(data.printerConfig.printAutomatically ?? false);
+                setEnableReceiptPrinting(data.printerConfig.enableReceiptPrinting ?? true);
+                if (data.printerConfig.paperSize) setReceiptPaperSize(data.printerConfig.paperSize);
+                if (data.printerConfig.copies) setPrinterCopies(data.printerConfig.copies);
+                if (data.printerConfig.qrCodeOnReceipt !== undefined) setReceiptShowQr(data.printerConfig.qrCodeOnReceipt);
+                if (data.printerConfig.barcodeOnReceipt !== undefined) setReceiptShowBarcode(data.printerConfig.barcodeOnReceipt);
+              }
+
+              if (!(data.cashEnabled ?? true) && data.upiEnabled) setPaymentMode("UPI");
+              else if (!(data.cashEnabled ?? true) && !(data.upiEnabled ?? true) && data.razorpayEnabled) setPaymentMode("RAZORPAY");
             }
-
-            if (data.printerConfig) {
-              setPrintAutomatically(data.printerConfig.printAutomatically ?? false);
-              setEnableReceiptPrinting(data.printerConfig.enableReceiptPrinting ?? true);
-              if (data.printerConfig.paperSize) setReceiptPaperSize(data.printerConfig.paperSize);
-              if (data.printerConfig.copies) setPrinterCopies(data.printerConfig.copies);
-              if (data.printerConfig.qrCodeOnReceipt !== undefined) setReceiptShowQr(data.printerConfig.qrCodeOnReceipt);
-              if (data.printerConfig.barcodeOnReceipt !== undefined) setReceiptShowBarcode(data.printerConfig.barcodeOnReceipt);
-            }
-
-            if (!(data.cashEnabled ?? true) && data.upiEnabled) setPaymentMode("UPI");
-            else if (!(data.cashEnabled ?? true) && !(data.upiEnabled ?? true) && data.razorpayEnabled) setPaymentMode("RAZORPAY");
+          },
+          (err) => {
+            console.log("User doc onSnapshot error:", err);
           }
-        });
+        );
       }
     );
-    return () => unsub();
+    return () => {
+      if (unsubUserSnap) unsubUserSnap();
+      unsub();
+    };
   }, []);
 
   const triggerUpiSuccessAnimation = () => {
@@ -356,9 +441,9 @@ export default function SalesScreen({ navigation }) {
       amount: total * 100,
       name: shopName,
       prefill: {
-        email: auth.currentUser?.email || 'test@example.com',
+        email: auth?.currentUser?.email || 'test@example.com',
         contact: '',
-        name: auth.currentUser?.displayName || 'Merchant Customer'
+        name: auth?.currentUser?.displayName || 'Merchant Customer'
       },
       theme: { color: '#6366f1' }
     };
@@ -377,7 +462,7 @@ export default function SalesScreen({ navigation }) {
 
   const finalizeOrder = async (payId = "CASH_OR_OTHER") => {
     try {
-      const user = auth.currentUser;
+      const user = auth?.currentUser;
       if (!user) return;
 
       const salesSnap = await getDocs(collection(db, "users", user.uid, "sales"));
@@ -441,17 +526,21 @@ export default function SalesScreen({ navigation }) {
   };
 
   useEffect(() => {
-    (async () => {
-      const status = await Camera.getCameraPermissionStatus();
-      if (status === "granted") { setHasPermission(true); }
-      else {
-        const newStatus = await Camera.requestCameraPermission();
-        if (newStatus === "granted") { setHasPermission(true); }
-        else {
-          setHasPermission(false);
+    const timer = setTimeout(async () => {
+      try {
+        if (typeof Camera?.getCameraPermissionStatus === "function") {
+          const status = await Camera.getCameraPermissionStatus();
+          if (status !== "granted" && typeof Camera?.requestCameraPermission === "function") {
+            await Camera.requestCameraPermission();
+          }
+        } else if (!hasPermission && typeof requestPermission === "function") {
+          await requestPermission();
         }
+      } catch (error) {
+        console.log("SalesScreen camera permission error:", error);
       }
-    })();
+    }, 500);
+    return () => clearTimeout(timer);
   }, []);
 
   const inventoryCollection = currentMode === "global" ? "global_inventory" : "inventory";
@@ -488,8 +577,13 @@ export default function SalesScreen({ navigation }) {
     setBill(updatedBill);
     await syncToCloudCart(updatedBill);
 
-    if (item.id && item.id.length > 10) {
-      await updateDoc(doc(db, "users", auth.currentUser.uid, inventoryCollection, item.id), { quantity: item.quantity - 1 });
+    const user = auth?.currentUser;
+    if (user?.uid && item.id && item.id.length > 10) {
+      try {
+        await updateDoc(doc(db, "users", user.uid, inventoryCollection, item.id), { quantity: item.quantity - 1 });
+      } catch (err) {
+        console.log("Failed to update inventory quantity in addToBill:", err);
+      }
     }
   };
 
@@ -507,8 +601,13 @@ export default function SalesScreen({ navigation }) {
     setBill(updatedBill);
     await syncToCloudCart(updatedBill);
 
-    if (item.id && item.id.length > 10) {
-      await updateDoc(doc(db, "users", auth.currentUser.uid, inventoryCollection, item.id), { quantity: item.quantity + 1 });
+    const user = auth?.currentUser;
+    if (user?.uid && item.id && item.id.length > 10) {
+      try {
+        await updateDoc(doc(db, "users", user.uid, inventoryCollection, item.id), { quantity: item.quantity + 1 });
+      } catch (err) {
+        console.log("Failed to update inventory quantity in decreaseQty:", err);
+      }
     }
   };
 
@@ -521,8 +620,13 @@ export default function SalesScreen({ navigation }) {
           const updatedBill = bill.filter(i => !((i.id && i.id === item.id) || (i.barcode && i.barcode === item.barcode)));
           setBill(updatedBill);
           await syncToCloudCart(updatedBill);
-          if (item.id && item.id.length > 10) {
-            await updateDoc(doc(db, "users", auth.currentUser.uid, inventoryCollection, item.id), { quantity: item.quantity + item.qty });
+          const user = auth?.currentUser;
+          if (user?.uid && item.id && item.id.length > 10) {
+            try {
+              await updateDoc(doc(db, "users", user.uid, inventoryCollection, item.id), { quantity: item.quantity + item.qty });
+            } catch (err) {
+              console.log("Failed to update inventory quantity in removeItem:", err);
+            }
           }
         }
       }
@@ -539,7 +643,7 @@ export default function SalesScreen({ navigation }) {
 
   const confirmHold = async () => {
     try {
-      const user = auth.currentUser;
+      const user = auth?.currentUser;
       if (!user) return;
 
       const newHold = {
@@ -728,14 +832,19 @@ export default function SalesScreen({ navigation }) {
     });
 
     if (item) {
-      ScanBeep?.beep?.();
-      await addToBill(item);
-      setShowScanToast(true);
-      setTimeout(() => {
-        setShowScanToast(false);
+      try {
+        ScanBeep?.beep?.();
+        await addToBill(item);
+        setShowScanToast(true);
+        setTimeout(() => {
+          setShowScanToast(false);
+          scanLockRef.current = false;
+          focusGunScanner();
+        }, 1200);
+      } catch (err) {
+        console.log("Error adding scanned item:", err);
         scanLockRef.current = false;
-        focusGunScanner();
-      }, 1200);
+      }
     } else {
       setScanAlertData({
         visible: true,
@@ -749,7 +858,9 @@ export default function SalesScreen({ navigation }) {
 
   // 1️⃣ Camera Code Scanner
   const codeScanner = useCodeScanner({
-    codeTypes: ["ean-13", "ean-8", "code-128", "qr", "upc-a", "upc-e"],
+    codeTypes: Platform.OS === "ios"
+      ? ["ean-13", "qr", "ean-8"]
+      : ["ean-13", "qr", "ean-8", "upc-a"],
     onCodeScanned: async (codes) => {
       const rawCode = codes[0]?.value;
       if (rawCode) {
@@ -786,9 +897,7 @@ export default function SalesScreen({ navigation }) {
     }
   };
 
-  const filteredInventory = inventory.filter(i =>
-    (i.itemName || i.name || "").toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredInventory = inventory.filter(i => matchProductSearch(i, search));
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
@@ -816,9 +925,25 @@ export default function SalesScreen({ navigation }) {
 
       {/* TOP HEADER */}
       <View style={[styles.topWhiteHeader, { backgroundColor: theme.card, borderBottomColor: darkMode ? '#334155' : '#e2e8f0' }]}>
-        <View style={[styles.shopBadge, { backgroundColor: darkMode ? '#1e293b' : '#eef2ff' }]}>
-          <Icon name="storefront" size={20} color="#16a34a" />
-          <Text style={[styles.shopNameText, { color: darkMode ? '#f8fafc' : '#6366f1' }]} numberOfLines={1}>{shopName}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 }}>
+          <TouchableOpacity 
+            focusable={false}
+            onPress={() => {
+              if (navigation?.canGoBack?.()) {
+                navigation.goBack();
+              } else {
+                navigation.navigate("Dashboard");
+              }
+            }}
+            style={[styles.headerBackBtn, { backgroundColor: darkMode ? '#1e293b' : '#f1f5f9' }]}
+            activeOpacity={0.7}
+          >
+            <Icon name="arrow-left" size={22} color={theme.text} />
+          </TouchableOpacity>
+          <View style={[styles.shopBadge, { backgroundColor: darkMode ? '#1e293b' : '#eef2ff' }]}>
+            <Icon name="storefront" size={20} color="#16a34a" />
+            <Text style={[styles.shopNameText, { color: darkMode ? '#f8fafc' : '#6366f1' }]} numberOfLines={1}>{shopName}</Text>
+          </View>
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -851,14 +976,22 @@ export default function SalesScreen({ navigation }) {
         <View style={[styles.leftSection, isLandscape && styles.landscapeLeftSection]}>
           <View style={[styles.cameraOuterWrapper, isLandscape && styles.landscapeCameraWrapper, { backgroundColor: theme.background }]}>
             <View style={styles.cameraFrameContainer}>
-              {device && hasPermission && (
+              {device && hasPermission && isCameraActive ? (
                 <Camera
                   style={StyleSheet.absoluteFill}
                   device={device}
-                  isActive={isActive}
+                  isActive={isCameraActive}
                   codeScanner={codeScanner}
-                  torch={torch}
+                  torch={device?.hasTorch && torch === "on" ? "on" : "off"}
+                  onError={(error) => console.log("Camera runtime error:", error)}
                 />
+              ) : (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0f172a", justifyContent: "center", alignItems: "center" }]}>
+                  <Icon name={!hasPermission ? "camera-off" : "camera-outline"} size={40} color="#64748b" />
+                  <Text style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
+                    {!hasPermission ? "Camera permission required" : "Camera paused"}
+                  </Text>
+                </View>
               )}
               <View style={styles.overlay}>
                 <View style={styles.cameraControlRow}>
@@ -1426,6 +1559,7 @@ const styles = StyleSheet.create({
   topWhiteHeader: { height: 60, width: '100%', backgroundColor: '#fff', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', elevation: 2, marginTop: Platform.OS === "android" ? StatusBar.currentHeight || 24 : 0 },
   shopBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eef2ff', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, maxWidth: '60%' },
   shopNameText: { fontSize: 16, fontWeight: '800', color: '#6366f1', marginLeft: 6 },
+  headerBackBtn: { padding: 8, marginRight: 8, borderRadius: 20 },
   headerIconBtn: { padding: 8, marginLeft: 6, backgroundColor: '#f1f5f9', borderRadius: 20, position: 'relative' },
   badgeContainer: { position: 'absolute', top: 2, right: 2, backgroundColor: '#ef4444', minWidth: 16, height: 16, borderRadius: 8, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3 },
   badgeText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
@@ -1573,3 +1707,49 @@ const styles = StyleSheet.create({
     fontSize: 15,
   }
 });
+
+export default function SalesScreen(props) {
+  const routeRest = Boolean(props.route?.params?.isRestaurant);
+  const [isRestaurant, setIsRestaurant] = useState(routeRest);
+  const [loading, setLoading] = useState(!routeRest);
+
+  useEffect(() => {
+    let active = true;
+    const checkMode = async () => {
+      try {
+        const user = auth?.currentUser;
+        if (!user) {
+          if (active) setLoading(false);
+          return;
+        }
+        const cached = await getCachedShopType(user.uid);
+        if (cached && active) {
+          setIsRestaurant(isRestaurantShop(cached));
+          setLoading(false);
+        }
+        const { isRestaurant: isRest } = await fetchAndCacheShopType(user.uid);
+        if (active) {
+          setIsRestaurant(isRest);
+          setLoading(false);
+        }
+      } catch (e) {
+        console.log("SalesScreen checkMode error:", e);
+        if (active) setLoading(false);
+      }
+    };
+    checkMode();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (loading) {
+    return <View style={{ flex: 1, backgroundColor: "#f8fafc" }} />;
+  }
+
+  if (isRestaurant) {
+    return <RestaurantSalesBilling {...props} />;
+  }
+
+  return <RetailSalesScreen {...props} />;
+}

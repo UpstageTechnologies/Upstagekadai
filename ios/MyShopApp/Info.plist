@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -40,6 +42,8 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Upstage POS needs microphone access when capturing video.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Upstage POS needs your location to set store and delivery addresses.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Upstage POS needs your location to set store and delivery addresses.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Upstage POS needs Bluetooth access to connect to thermal receipt printers.</string>

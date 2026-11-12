@@ -1,0 +1,21 @@
+diff --git a/node_modules/react-native-vision-camera/ios/Core/Types/CodeScannerOptions.swift b/node_modules/react-native-vision-camera/ios/Core/Types/CodeScannerOptions.swift
+index 3ce0a77..df8402c 100644
+--- a/node_modules/react-native-vision-camera/ios/Core/Types/CodeScannerOptions.swift
++++ b/node_modules/react-native-vision-camera/ios/Core/Types/CodeScannerOptions.swift
+@@ -16,9 +16,14 @@ struct CodeScannerOptions: Equatable {
+ 
+   init(fromJsValue dictionary: NSDictionary) throws {
+     if let codeTypes = dictionary["codeTypes"] as? [String] {
+-      self.codeTypes = try codeTypes.map { value in
+-        return try AVMetadataObject.ObjectType(withString: value)
++      var uniqueTypes = [AVMetadataObject.ObjectType]()
++      for value in codeTypes {
++        let type = try AVMetadataObject.ObjectType(withString: value)
++        if !uniqueTypes.contains(type) {
++          uniqueTypes.append(type)
++        }
+       }
++      self.codeTypes = uniqueTypes
+     } else {
+       throw CameraError.parameter(.invalidCombination(provided: "codeScanner", missing: "codeTypes"))
+     }

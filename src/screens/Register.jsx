@@ -30,6 +30,7 @@ import RNFS from "react-native-fs";
 import { useTheme } from "../theme/ThemeContext";
 import { LightTheme } from "../theme/colors";
 import useKeyboardFocusScroll from "../hooks/useKeyboardFocusScroll";
+import { setCachedShopType } from "../utils/restaurantMode";
 
 LogBox.ignoreLogs(["VirtualizedLists should never be nested"]);
 
@@ -46,7 +47,7 @@ export default function RegisterScreen({ navigation }) {
   const [shopName, setShopName] = useState("");
   const [shopType, setShopType] = useState("");
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
-  const shopTypes = ["Store", "Super Market", "Factory", "Medical", "Other"];
+  const shopTypes = ["Store", "Super Market", "Factory", "Medical", "Other", "Restaurant"];
 
   const [ownerName, setOwnerName] = useState("");
   const [phone, setPhone] = useState("");
@@ -480,6 +481,14 @@ export default function RegisterScreen({ navigation }) {
       const resultData = responseJson?.result;
       if (!resultData) {
         throw new Error("Cloud Function returned no result");
+      }
+
+      if (resultData?.uid && shopType) {
+        try {
+          await setCachedShopType(resultData.uid, shopType);
+        } catch (cacheErr) {
+          console.log("Could not cache shopType:", cacheErr);
+        }
       }
 
       setMessage(

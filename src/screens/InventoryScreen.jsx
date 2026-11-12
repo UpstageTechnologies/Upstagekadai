@@ -46,6 +46,8 @@ import {
   markProductAsExpired,
   calculateExpiredLoss,
 } from "../utils/expiredProductsService";
+import RestaurantMenuScreen from "./restaurant/RestaurantMenuScreen";
+import { fetchAndCacheShopType, getCachedShopType, isRestaurantShop } from "../utils/restaurantMode";
 import bluetoothPrinter from "../utils/bluetoothPrinter";
 import {
   validateHSNCode,
@@ -53,7 +55,22 @@ import {
   searchHSNByProductDetails,
   suggestHSNCode,
   getHSNDescription,
+  getHSNEntry,
+  deriveCategoryFromHSN,
+  matchProductSearch,
 } from "../services/hsnService";
+
+export const RESTAURANT_FOOD_CATEGORIES = [
+  { id: "Starters", name: "Starters", icon: "🍟" },
+  { id: "Main Course", name: "Main Course", icon: "🍛" },
+  { id: "Breads", name: "Breads", icon: "🫓" },
+  { id: "Rice & Biryani", name: "Rice & Biryani", icon: "🍚" },
+  { id: "Beverages", name: "Beverages", icon: "🥤" },
+  { id: "Desserts", name: "Desserts", icon: "🍨" },
+  { id: "Snacks", name: "Snacks", icon: "🥪" },
+  { id: "Soups & Salads", name: "Soups & Salads", icon: "🥣" },
+  { id: "Combos & Thalis", name: "Combos & Thalis", icon: "🍱" },
+];
 
 const UNIT_CATEGORIES = [
   { category: "Weight", units: ["kg", "g", "mg", "ton", "quintal", "lb", "oz"] },
@@ -205,13 +222,37 @@ const FloatingLabelInput = ({ label, value, onChangeText, theme, keyboardType, a
   );
 };
 
-export default function InventoryScreen({ appMode }) {
+function RetailInventoryScreen({ appMode, navigation: passedNav, isRestaurant: propIsRest }) {
   const navigation = useNavigation(); 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
   const { theme, darkMode } = useTheme();
   const isFocused = useIsFocused();
+
+  const [isRestaurant, setIsRestaurant] = useState(Boolean(propIsRest));
+
+  useEffect(() => {
+    let active = true;
+    if (propIsRest !== undefined) {
+      setIsRestaurant(Boolean(propIsRest));
+      return;
+    }
+    const checkRest = async () => {
+      const user = auth.currentUser;
+      if (!user) return;
+      const cached = await getCachedShopType(user.uid);
+      if (cached && active) {
+        setIsRestaurant(isRestaurantShop(cached));
+      }
+      const { isRestaurant: isRest } = await fetchAndCacheShopType(user.uid);
+      if (active) {
+        setIsRestaurant(isRest);
+      }
+    };
+    checkRest();
+    return () => { active = false; };
+  }, [propIsRest]);
 
   const [items, setItems] = useState([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
@@ -436,7 +477,8 @@ export default function InventoryScreen({ appMode }) {
         if (!active) return;
         if (userSnap.exists()) {
           const uData = userSnap.data();
-          const fetchedPlan = uData.userPlan || uData.subscriptionPlan || "Basic";
+          const isExpired = uData.subscriptionExpiry ? Date.now() > Number(uData.subscriptionExpiry) : false;
+          const fetchedPlan = isExpired ? "Expired" : (uData.userPlan || uData.subscriptionPlan || "Basic");
           setUserPlan(fetchedPlan);
           const savedAllowed = uData.selectedBasicProducts || [];
           setSelectedAllowedIds(savedAllowed);
@@ -447,13 +489,30 @@ export default function InventoryScreen({ appMode }) {
         const targetMode = appMode || "local";
         setCurrentMode(targetMode);
 
-        const collectionName = targetMode === "global" ? "global_inventory" : "inventory";
+        const collectionName = isRestaurant
+          ? "restaurant_menu"
+          : (targetMode === "global" ? "global_inventory" : "inventory");
 
         unsubscribe = onSnapshot(
           collection(db, "users", session.uid, collectionName),
           (snap) => {
             if (!active) return;
-            const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const data = snap.docs.map((d) => {
+              const docData = d.data();
+              return {
+                id: d.id,
+                ...docData,
+                itemName: docData.name || docData.itemName || "Unnamed Food",
+                name: docData.name || docData.itemName || "Unnamed Food",
+                salesPrice: Number(docData.price ?? docData.salesPrice ?? 0),
+                price: Number(docData.price ?? docData.salesPrice ?? 0),
+                purchasePrice: Number(docData.purchasePrice ?? docData.costPrice ?? 0),
+                category: docData.category || (isRestaurant ? "Main Course" : "General"),
+                quantity: docData.quantity !== undefined ? docData.quantity : (docData.isAvailable !== false ? 10 : 0),
+                isAvailable: docData.isAvailable !== false,
+                dietType: docData.dietType || "veg",
+              };
+            });
             setItems(data);
             setInventoryLoading(false);
             setInventoryError("");
@@ -483,7 +542,7 @@ export default function InventoryScreen({ appMode }) {
       active = false;
       unsubscribe?.();
     };
-  }, [isFocused, appMode]);
+  }, [isFocused, appMode, isRestaurant]);
 
   useEffect(() => {
     let active = true;
@@ -1190,14 +1249,85 @@ export default function InventoryScreen({ appMode }) {
     ]);
   };
 
+  const restaurantCategoriesList = useMemo(() => {
+    const list = RESTAURANT_FOOD_CATEGORIES.map(c => ({ ...c }));
+    const existing = new Set(list.map(c => c.name.toLowerCase()));
+    items.forEach(item => {
+      const cat = (item.category || item.categoryName || "").trim();
+      if (cat && !existing.has(cat.toLowerCase())) {
+        existing.add(cat.toLowerCase());
+        list.push({ id: cat, name: cat, icon: "🍽️" });
+      }
+    });
+    return list;
+  }, [items]);
+
   const getCategoryLabel = category => String(category?.name || category?.categoryName || category?.id || "Unnamed category");
   const getSubcategoryLabel = subcategory => String(subcategory?.name || subcategory?.categoryName || subcategory?.subcategoryName || subcategory?.id || "Unnamed subcategory");
   const normalizeCategoryValue = value => String(value || "").trim().toLocaleLowerCase();
-  const itemMatchesCategory = (item, category) => item.categoryId === category?.id ||
-    normalizeCategoryValue(item.categoryName || item.category) === normalizeCategoryValue(getCategoryLabel(category));
+  const itemMatchesCategory = (item, category) => {
+    const label = normalizeCategoryValue(getCategoryLabel(category));
+    if (!label) return true;
+    if (isRestaurant) {
+      const itemCat = normalizeCategoryValue(item.category || item.categoryName);
+      return itemCat === label;
+    }
+    if (item.categoryId && category?.id && item.categoryId === category.id) return true;
+    const itemCat = normalizeCategoryValue(item.categoryName || item.category);
+    if (itemCat === label) return true;
+    if (itemCat.includes(label) || label.includes(itemCat)) return true;
+    if (item.hsnCode) {
+      const entry = getHSNEntry(item.hsnCode);
+      if (entry) {
+        const hsnCat = normalizeCategoryValue(entry.category);
+        if (hsnCat.includes(label) || label.includes(hsnCat)) return true;
+        if (entry.keywords && entry.keywords.some(k => normalizeCategoryValue(k).includes(label) || label.includes(normalizeCategoryValue(k)))) return true;
+      }
+    }
+    return false;
+  };
   const itemMatchesSubcategory = (item, subcategory) => item.subcategoryId === subcategory?.id ||
     normalizeCategoryValue(item.subcategoryName || item.subcategory || item.subCategory) === normalizeCategoryValue(getSubcategoryLabel(subcategory));
-  const categoriesList = mainCategories;
+  const categoriesList = isRestaurant ? restaurantCategoriesList : mainCategories;
+
+  const handleToggleFoodAvailability = async (item) => {
+    try {
+      const session = await getSession();
+      const ownerUid = session?.uid || auth.currentUser?.uid;
+      if (!ownerUid) return;
+      const currentAvail = item.isAvailable !== false;
+      await updateDoc(doc(db, "users", ownerUid, "restaurant_menu", item.id), {
+        isAvailable: !currentAvail,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      Alert.alert("Error", "Could not update availability: " + e.message);
+    }
+  };
+
+  const handleDeleteFood = (item) => {
+    Alert.alert(
+      "Delete Menu Item",
+      `Are you sure you want to delete "${item.name || item.itemName}"? This action cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const session = await getSession();
+              const ownerUid = session?.uid || auth.currentUser?.uid;
+              if (!ownerUid) return;
+              await deleteDoc(doc(db, "users", ownerUid, "restaurant_menu", item.id));
+            } catch (err) {
+              Alert.alert("Delete Failed", err.message);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const resetPromotionForm = (offer = null) => {
     setPromotionName(offer?.offerName || "");
@@ -1312,8 +1442,56 @@ export default function InventoryScreen({ appMode }) {
     return result;
   }, []);
 
-  // --- BRAND PERFORMANCE ANALYTICS ---
+  // --- BRAND / FOOD VARIETIES PERFORMANCE ANALYTICS ---
   const brandsAnalytics = useMemo(() => {
+    if (isRestaurant) {
+      const varietyStats = {
+        "Pure Veg": { name: "Pure Veg", icon: "🌱", productCount: 0, totalQty: 0, totalPurchaseValue: 0, totalSalesValue: 0 },
+        "Non-Veg": { name: "Non-Veg", icon: "🍗", productCount: 0, totalQty: 0, totalPurchaseValue: 0, totalSalesValue: 0 },
+        "Egg": { name: "Egg", icon: "🥚", productCount: 0, totalQty: 0, totalPurchaseValue: 0, totalSalesValue: 0 },
+        "Portion Variants": { name: "Portion Variants", icon: "📏", productCount: 0, totalQty: 0, totalPurchaseValue: 0, totalSalesValue: 0 },
+      };
+
+      items.forEach((item) => {
+        const qty = Number(item.quantity) || (item.isAvailable !== false ? 10 : 0);
+        const pPrice = Number(item.purchasePrice) || 0;
+        const sPrice = Number(item.salesPrice || item.price) || 0;
+        const diet = (item.dietType || "veg").toLowerCase();
+
+        if (diet === "non-veg") {
+          varietyStats["Non-Veg"].productCount += 1;
+          varietyStats["Non-Veg"].totalQty += qty;
+          varietyStats["Non-Veg"].totalPurchaseValue += pPrice * qty;
+          varietyStats["Non-Veg"].totalSalesValue += sPrice * qty;
+        } else if (diet === "egg") {
+          varietyStats["Egg"].productCount += 1;
+          varietyStats["Egg"].totalQty += qty;
+          varietyStats["Egg"].totalPurchaseValue += pPrice * qty;
+          varietyStats["Egg"].totalSalesValue += sPrice * qty;
+        } else {
+          varietyStats["Pure Veg"].productCount += 1;
+          varietyStats["Pure Veg"].totalQty += qty;
+          varietyStats["Pure Veg"].totalPurchaseValue += pPrice * qty;
+          varietyStats["Pure Veg"].totalSalesValue += sPrice * qty;
+        }
+
+        if (item.variants && item.variants.length > 0) {
+          varietyStats["Portion Variants"].productCount += 1;
+          varietyStats["Portion Variants"].totalQty += qty;
+          varietyStats["Portion Variants"].totalPurchaseValue += pPrice * qty;
+          varietyStats["Portion Variants"].totalSalesValue += sPrice * qty;
+        }
+      });
+
+      const list = Object.values(varietyStats).filter(v => v.productCount > 0);
+      if (list.length === 0) {
+        list.push(varietyStats["Pure Veg"]);
+      }
+      list.sort((a, b) => b.totalSalesValue - a.totalSalesValue);
+      const maxSales = list.length > 0 ? Math.max(...list.map((b) => b.totalSalesValue)) : 0;
+      return { list, maxSales };
+    }
+
     const stats = {};
     items.forEach((item) => {
       const brandName = item.brand?.trim() || "No Brand";
@@ -1344,7 +1522,7 @@ export default function InventoryScreen({ appMode }) {
     const maxSales = list.length > 0 ? Math.max(...list.map((b) => b.totalSalesValue)) : 0;
 
     return { list, maxSales };
-  }, [items]);
+  }, [items, isRestaurant]);
 
   const filteredItems = items.filter((item) => {
     const q = String(searchText || "").toLowerCase();
@@ -1358,21 +1536,37 @@ export default function InventoryScreen({ appMode }) {
     }
 
     if (selectedBrand) {
-      const itemBrand = item.brand || "No Brand";
-      if (itemBrand !== selectedBrand) return false;
+      if (isRestaurant) {
+        const diet = (item.dietType || "veg").toLowerCase();
+        if (selectedBrand === "Pure Veg") {
+          if (diet !== "veg") return false;
+        } else if (selectedBrand === "Non-Veg") {
+          if (diet !== "non-veg") return false;
+        } else if (selectedBrand === "Egg") {
+          if (diet !== "egg") return false;
+        } else if (selectedBrand === "Portion Variants") {
+          if (!item.variants || item.variants.length === 0) return false;
+        } else {
+          const itemBrand = item.variety || item.cuisine || item.dietType || item.brand || "Standard";
+          if (itemBrand !== selectedBrand) return false;
+        }
+      } else {
+        const itemBrand = item.brand || "No Brand";
+        if (itemBrand !== selectedBrand) return false;
+      }
     }
 
     if (activeTab === "lowStock") {
-      if ((item.quantity || 0) > 5) return false;
+      if (isRestaurant) {
+        const isAvail = item.isAvailable !== false;
+        const qty = Number(item.quantity ?? 10);
+        if (isAvail && qty > 5) return false;
+      } else {
+        if ((item.quantity || 0) > 5) return false;
+      }
     }
 
-    return (
-      String(item.itemName || "").toLowerCase().includes(q) ||
-      String(item.brand || "").toLowerCase().includes(q) ||
-      (item.barcode || "").toString().toLowerCase().includes(q) ||
-      String(item.categoryName || item.category || "").toLowerCase().includes(q) ||
-      String(item.subcategoryName || item.subcategory || item.subCategory || "").toLowerCase().includes(q)
-    );
+    return matchProductSearch(item, searchText);
   });
 
   const handleBackPress = () => {
@@ -1397,7 +1591,7 @@ export default function InventoryScreen({ appMode }) {
   const editOfferPrice = editPricing.valid ? editPricing.effectivePrice : null;
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.background }, (isRestaurant && activeTab === "products" && !selectedCategory && !selectedBrand) && { padding: 0 }]}>
       {/* HIDDEN IN-MEMORY HEADLESS GOOGLE IMAGE SCRAPER WEBVIEW */}
       {scraperUrl !== "" && (
         <View style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}>
@@ -1414,79 +1608,96 @@ export default function InventoryScreen({ appMode }) {
       )}
 
       {/* Header */}
-      <View
-        style={{
-          flexDirection: "row",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 15
-        }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          {(activeTab !== "menu" || selectedCategory || selectedBrand) && (
-            <TouchableOpacity onPress={handleBackPress} style={{ marginRight: 10 }}>
-              <Text style={{ fontSize: 22, color: theme.text, fontWeight: "bold" }}>←</Text>
-            </TouchableOpacity>
-          )}
-          <Text style={[styles.title, { color: theme.text }]}>
-            📦{" "}
-            {selectedSubcategory
-              ? getSubcategoryLabel(selectedSubcategory)
-              : selectedCategory
-              ? getCategoryLabel(selectedCategory)
-              : selectedBrand
-              ? selectedBrand
-              : activeTab === "menu"
-              ? "Inventory"
-              : activeTab === "lowStock"
-              ? "LOW STOCK"
-              : activeTab === "expired"
-              ? "EXPIRED PRODUCTS"
-              : activeTab.toUpperCase()}
-          </Text>
-        </View>
+      {!(isRestaurant && activeTab === "products" && !selectedCategory && !selectedBrand) && (
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 15
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            {(activeTab !== "menu" || selectedCategory || selectedBrand) && (
+              <TouchableOpacity onPress={handleBackPress} style={{ marginRight: 10 }}>
+                <Text style={{ fontSize: 22, color: theme.text, fontWeight: "bold" }}>←</Text>
+              </TouchableOpacity>
+            )}
+            <Text style={[styles.title, { color: theme.text }]}>
+              {isRestaurant ? "🍽️ " : "📦 "}
+              {selectedSubcategory
+                ? getSubcategoryLabel(selectedSubcategory)
+                : selectedCategory
+                ? getCategoryLabel(selectedCategory)
+                : selectedBrand
+                ? (isRestaurant ? `${selectedBrand} Dishes` : selectedBrand)
+                : activeTab === "menu"
+                ? "Inventory"
+                : activeTab === "lowStock"
+                ? (isRestaurant ? "SOLD OUT & LOW STOCK" : "LOW STOCK")
+                : activeTab === "categories"
+                ? (isRestaurant ? "FOOD CATEGORIES" : "CATEGORIES")
+                : activeTab === "brands"
+                ? (isRestaurant ? "FOOD VARIETIES" : "BRANDS PERFORMANCE")
+                : activeTab === "restock"
+                ? (isRestaurant ? "KITCHEN RESTOCK" : "RESTOCK")
+                : activeTab === "import"
+                ? (isRestaurant ? "IMPORT FOOD MENU" : "IMPORT PRODUCTS")
+                : activeTab === "promotions"
+                ? (isRestaurant ? "FOOD OFFERS & COMBOS" : "PROMOTIONS")
+                : activeTab === "expired"
+                ? "EXPIRED PRODUCTS"
+                : activeTab.toUpperCase()}
+            </Text>
+          </View>
 
-        {/* Professional Header Action: Green Choose Button replacing Plan Badge */}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          {((userPlan === "Basic" && items.length > 10) || (userPlan === "Premium" && items.length > 200)) && (
-            <TouchableOpacity 
-              onPress={() => {
-                setTempSelectedIds(selectedAllowedIds);
-                setSelectionModalVisible(true);
-              }}
-              style={{ 
-                backgroundColor: "#10b981", 
-                paddingHorizontal: 12, 
-                paddingVertical: 7, 
-                borderRadius: 12,
-                flexDirection: "row",
-                alignItems: "center",
-                shadowColor: "#000",
-                shadowOpacity: 0.15,
-                shadowRadius: 4,
-                elevation: 3
-              }}
-            >
-              <Text style={{ color: "#fff", fontSize: 12, fontWeight: "bold" }}>
-                ⚙️ Choose {userPlan === "Basic" ? "10" : "200"}
-              </Text>
-            </TouchableOpacity>
-          )}
+          {/* Professional Header Action: Green Choose Button replacing Plan Badge */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            {((userPlan === "Basic" && items.length > 10) || (userPlan === "Premium" && items.length > 200)) && (
+              <TouchableOpacity 
+                onPress={() => {
+                  setTempSelectedIds(selectedAllowedIds);
+                  setSelectionModalVisible(true);
+                }}
+                style={{ 
+                  backgroundColor: "#10b981", 
+                  paddingHorizontal: 12, 
+                  paddingVertical: 7, 
+                  borderRadius: 12,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  shadowColor: "#000",
+                  shadowOpacity: 0.15,
+                  shadowRadius: 4,
+                  elevation: 3
+                }}
+              >
+                <Text style={{ color: "#fff", fontSize: 12, fontWeight: "bold" }}>
+                  ⚙️ Choose {userPlan === "Basic" ? "10" : "200"}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
-      </View>
+      )}
 
       {/* 1. MENU DASHBOARD VIEW */}
       {activeTab === "menu" && !selectedCategory && !selectedBrand && (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: isLandscape ? 120 : 135 }}>
           <View style={[styles.menuCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            {/* Card 1: Products / Food Items */}
             <TouchableOpacity style={styles.menuItem} onPress={() => setActiveTab("products")}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]}>
-                <Text>📦</Text>
+                <Text>{isRestaurant ? "🍽️" : "📦"}</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Products</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {isRestaurant ? "Food Items / Dishes" : "Products"}
+                </Text>
                 <Text style={[styles.menuSub, { color: theme.subText }]}>
-                  Manage products ({userPlan === "Pro" ? "Unlimited" : userPlan === "Premium" ? `${items.length}/200` : `${items.length}/10`})
+                  {isRestaurant
+                    ? `Manage food menu (${items.length} items)`
+                    : `Manage products (${userPlan === "Pro" ? "Unlimited" : userPlan === "Premium" ? `${items.length}/200` : `${items.length}/10`})`}
                 </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
@@ -1494,83 +1705,125 @@ export default function InventoryScreen({ appMode }) {
 
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
+            {/* Card 2: Categories */}
             <TouchableOpacity style={styles.menuItem} onPress={() => setActiveTab("categories")}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]}>
                 <Text>📂</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Categories</Text>
-                <Text style={[styles.menuSub, { color: theme.subText }]}>Manage product categories</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {isRestaurant ? "Food Categories" : "Categories"}
+                </Text>
+                <Text style={[styles.menuSub, { color: theme.subText }]}>
+                  {isRestaurant
+                    ? "Starters, Main Course, Breads, Rice, Beverages..."
+                    : "Manage product categories"}
+                </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
             </TouchableOpacity>
 
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
+            {/* Card 3: Brands Performance / Food Varieties */}
             <TouchableOpacity style={styles.menuItem} onPress={() => setActiveTab("brands")}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]}>
-                <Text>🏷️</Text>
+                <Text>{isRestaurant ? "🥗" : "🏷️"}</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Brands Performance</Text>
-                <Text style={[styles.menuSub, { color: theme.subText }]}>Sales & purchase analytics by brand</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {isRestaurant ? "Food Varieties & Diet Types" : "Brands Performance"}
+                </Text>
+                <Text style={[styles.menuSub, { color: theme.subText }]}>
+                  {isRestaurant
+                    ? "Pure Veg, Non-Veg, Egg, Portion Sizes & Combos"
+                    : "Sales & purchase analytics by brand"}
+                </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
             </TouchableOpacity>
 
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
+            {/* Card 4: Low Stock Alerts / Sold Out */}
             <TouchableOpacity style={styles.menuItem} onPress={() => setActiveTab("lowStock")}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]}>
                 <Text>⚠️</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Low Stock Alerts</Text>
-                <Text style={[styles.menuSub, { color: theme.subText }]}>Review low and out-of-stock products</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {isRestaurant ? "Sold Out & Low Stock" : "Low Stock Alerts"}
+                </Text>
+                <Text style={[styles.menuSub, { color: theme.subText }]}>
+                  {isRestaurant
+                    ? "Review unavailable dishes & low ingredients"
+                    : "Review low and out-of-stock products"}
+                </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
             </TouchableOpacity>
 
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
+            {/* Card 5: Restock List / Kitchen Restock */}
             <TouchableOpacity style={styles.menuItem} onPress={() => setActiveTab("restock")}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]}>
                 <Text>📋</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <Text style={[styles.menuTitle, { color: theme.text, marginRight: 8 }]}>Restock List</Text>
+                  <Text style={[styles.menuTitle, { color: theme.text, marginRight: 8 }]}>
+                    {isRestaurant ? "Kitchen Restock List" : "Restock List"}
+                  </Text>
                   <View style={{ backgroundColor: "#dcfce7", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
                     <Text style={{ color: "#16a34a", fontSize: 10, fontWeight: "bold" }}>Included in Pro</Text>
                   </View>
                 </View>
-                <Text style={[styles.menuSub, { color: theme.subText }]}>Plan and track products to restock</Text>
+                <Text style={[styles.menuSub, { color: theme.subText }]}>
+                  {isRestaurant
+                    ? "Plan kitchen groceries, ingredients & supplies"
+                    : "Plan and track products to restock"}
+                </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
             </TouchableOpacity>
 
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
+            {/* Card 6: Import Products / Food Menu */}
             <TouchableOpacity style={styles.menuItem} onPress={() => setActiveTab("import")}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#334155" : "#f1f5f9" }]}>
                 <Text>📥</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Import Products</Text>
-                <Text style={[styles.menuSub, { color: theme.subText }]}>Choose where your products come from.</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {isRestaurant ? "Import Food Menu" : "Import Products"}
+                </Text>
+                <Text style={[styles.menuSub, { color: theme.subText }]}>
+                  {isRestaurant
+                    ? "Import dishes, recipes & standard menus"
+                    : "Choose where your products come from."}
+                </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
             </TouchableOpacity>
 
             <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
+            {/* Card 7: Promotions / Food Offers & Combos */}
             <TouchableOpacity style={styles.menuItem} onPress={() => { resetPromotionForm(); setActiveTab("promotions"); }}>
               <View style={[styles.menuIconBox, { backgroundColor: darkMode ? "#064e3b" : "#ecfdf5" }]}>
                 <MaterialCommunityIcons name="tag-heart-outline" size={20} color="#16a34a" />
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.menuTitle, { color: theme.text }]}>Promotions</Text>
-                <Text style={[styles.menuSub, { color: theme.subText }]}>Create and manage shop promotions</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {isRestaurant ? "Food Offers & Combos" : "Promotions"}
+                </Text>
+                <Text style={[styles.menuSub, { color: theme.subText }]}>
+                  {isRestaurant
+                    ? "Create restaurant special offers & combo deals"
+                    : "Create and manage shop promotions"}
+                </Text>
               </View>
               <Text style={{ color: theme.subText, fontSize: 18 }}>›</Text>
             </TouchableOpacity>
@@ -1743,8 +1996,19 @@ export default function InventoryScreen({ appMode }) {
               })}
             </ScrollView>
 
-            <TouchableOpacity style={[styles.cancelBtn, { marginTop: 12 }]} onPress={() => setPromoProductModalVisible(false)}>
-              <Text style={styles.btnText}>Close</Text>
+            <TouchableOpacity 
+              style={{
+                marginTop: 12,
+                backgroundColor: "#ef4444",
+                paddingVertical: 12,
+                borderRadius: 10,
+                alignItems: "center",
+                justifyContent: "center",
+                width: "100%"
+              }} 
+              onPress={() => setPromoProductModalVisible(false)}
+            >
+              <Text style={{ color: "#ffffff", fontSize: 15, fontWeight: "700" }}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1756,16 +2020,22 @@ export default function InventoryScreen({ appMode }) {
           <View style={isLandscape ? styles.tabletGridContainer : null}>
             {categoriesLoading && <ActivityIndicator size="small" color="#16a34a" style={{ marginVertical: 20 }} />}
             {!!categoriesError && <Text style={{ padding: 12, color: "#b91c1c", backgroundColor: darkMode ? "#450a0a" : "#fef2f2", borderRadius: 10 }}>{categoriesError}</Text>}
-            {!categoriesLoading && !categoriesError && categoriesList.length === 0 && <Text style={{ padding: 18, color: theme.subText, textAlign: "center" }}>No categories found.</Text>}
+            {!categoriesLoading && !categoriesError && categoriesList.length === 0 && (
+              <Text style={{ padding: 18, color: theme.subText, textAlign: "center" }}>
+                {isRestaurant ? "No food categories found." : "No categories found."}
+              </Text>
+            )}
             {!categoriesError && categoriesList.map(cat => (
               <TouchableOpacity
                 key={cat.id}
                 style={[styles.subCard, isLandscape && styles.tabletHalfCard, { backgroundColor: theme.card }]}
                 onPress={() => { setSelectedCategory(cat); setSelectedSubcategory(null); setSearchText(""); setCategoriesError(""); }}
               >
-                <Text style={[styles.menuTitle, { color: theme.text }]}>📂 {getCategoryLabel(cat)}</Text>
+                <Text style={[styles.menuTitle, { color: theme.text }]}>
+                  {cat.icon ? `${cat.icon} ` : "📂 "}{getCategoryLabel(cat)}
+                </Text>
                 <Text style={{ color: theme.subText, fontSize: 12, marginTop: 4 }}>
-                  Products count: {items.filter(item => itemMatchesCategory(item, cat)).length}
+                  {isRestaurant ? "Dishes count: " : "Products count: "}{items.filter(item => itemMatchesCategory(item, cat)).length}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -1773,7 +2043,8 @@ export default function InventoryScreen({ appMode }) {
         </ScrollView>
       )}
 
-      {activeTab === "categories" && selectedCategory && !selectedSubcategory && (
+      {/* RETAIL SUBCATEGORIES LIST VIEW */}
+      {!isRestaurant && activeTab === "categories" && selectedCategory && !selectedSubcategory && (
         <ScrollView contentContainerStyle={{ paddingBottom: isLandscape ? 120 : 135 }}>
           <View style={isLandscape ? styles.tabletGridContainer : null}>
             {subcategoriesLoading && <ActivityIndicator size="small" color="#16a34a" style={{ marginVertical: 20 }} />}
@@ -1795,7 +2066,7 @@ export default function InventoryScreen({ appMode }) {
         </ScrollView>
       )}
 
-      {/* 3. BRANDS PERFORMANCE LIST VIEW */}
+      {/* 3. BRANDS / VARIETIES PERFORMANCE LIST VIEW */}
       {activeTab === "brands" && !selectedBrand && (
         <ScrollView contentContainerStyle={{ paddingBottom: isLandscape ? 120 : 135 }} showsVerticalScrollIndicator={false}>
           <View style={isLandscape ? styles.tabletGridContainer : null}>
@@ -1818,35 +2089,41 @@ export default function InventoryScreen({ appMode }) {
                   <View style={styles.brandHeader}>
                     <View style={{ flexDirection: "row", alignItems: "center", flex: 1 }}>
                       <View style={[styles.brandIconBox, { backgroundColor: darkMode ? "#1e293b" : "#eef2ff" }]}>
-                        <Text style={{ fontSize: 18 }}>🏷️</Text>
+                        <Text style={{ fontSize: 18 }}>{isRestaurant ? (brand.icon || "🍽️") : "🏷️"}</Text>
                       </View>
                       <View style={{ marginLeft: 10, flex: 1 }}>
                         <Text style={[styles.brandNameText, { color: theme.text }]} numberOfLines={1}>
                           {brand.name}
                         </Text>
                         <Text style={{ color: theme.subText, fontSize: 11 }}>
-                          {brand.productCount} Products • {brand.totalQty} Units In Stock
+                          {isRestaurant
+                            ? `${brand.productCount} Dishes • ${brand.totalQty} In Stock`
+                            : `${brand.productCount} Products • ${brand.totalQty} Units In Stock`}
                         </Text>
                       </View>
                     </View>
 
                     {isBestSeller && (
                       <View style={styles.bestSellerBadge}>
-                        <Text style={styles.bestSellerText}>⭐ Best Seller</Text>
+                        <Text style={styles.bestSellerText}>{isRestaurant ? "⭐ Popular" : "⭐ Best Seller"}</Text>
                       </View>
                     )}
                   </View>
 
                   <View style={styles.metricsContainer}>
                     <View style={[styles.metricBox, { backgroundColor: darkMode ? "#0f172a" : "#f8fafc" }]}>
-                      <Text style={[styles.metricLabel, { color: theme.subText }]}>Purchase Value</Text>
+                      <Text style={[styles.metricLabel, { color: theme.subText }]}>
+                        {isRestaurant ? "Cost Value" : "Purchase Value"}
+                      </Text>
                       <Text style={[styles.metricVal, { color: darkMode ? "#94a3b8" : "#475569" }]}>
                         ₹ {brand.totalPurchaseValue.toLocaleString("en-IN")}
                       </Text>
                     </View>
 
                     <View style={[styles.metricBox, { backgroundColor: darkMode ? "#064e3b" : "#ecfdf5" }]}>
-                      <Text style={[styles.metricLabel, { color: "#10b981" }]}>Sales Value</Text>
+                      <Text style={[styles.metricLabel, { color: "#10b981" }]}>
+                        {isRestaurant ? "Menu Value" : "Sales Value"}
+                      </Text>
                       <Text style={[styles.metricVal, { color: "#059669", fontWeight: "bold" }]}>
                         ₹ {brand.totalSalesValue.toLocaleString("en-IN")}
                       </Text>
@@ -1867,7 +2144,9 @@ export default function InventoryScreen({ appMode }) {
                   </View>
 
                   <View style={styles.viewItemsRow}>
-                    <Text style={{ fontSize: 12, color: theme.subText }}>Tap to view products under this brand</Text>
+                    <Text style={{ fontSize: 12, color: theme.subText }}>
+                      {isRestaurant ? "Tap to view dishes under this variety" : "Tap to view products under this brand"}
+                    </Text>
                     <Text style={{ color: theme.subText, fontSize: 14 }}>›</Text>
                   </View>
                 </TouchableOpacity>
@@ -1881,23 +2160,35 @@ export default function InventoryScreen({ appMode }) {
       {activeTab === "import" && (
         <View style={{ padding: 20, alignItems: "center" }}>
           <Text style={{ fontSize: 16, fontWeight: "bold", color: theme.text, textAlign: "center" }}>
-            Import Products
+            {isRestaurant ? "Import Food Menu & Recipes" : "Import Products"}
           </Text>
           <Text style={{ color: theme.subText, textAlign: "center", marginTop: 10 }}>
-            You can upload your CSV files or sync items directly from external databases.
+            {isRestaurant
+              ? "Import dishes, standard restaurant menus, or recipe items via CSV or cloud sync."
+              : "You can upload your CSV files or sync items directly from external databases."}
           </Text>
         </View>
       )}
 
+      {/* RESTAURANT FULL MENU VIEW */}
+      {isRestaurant && activeTab === "products" && !selectedCategory && !selectedBrand && (
+        <RestaurantMenuScreen
+          navigation={navigation}
+          onBack={() => setActiveTab("menu")}
+        />
+      )}
+
       {/* 5. PRODUCTS / LOW STOCK / RESTOCK / SELECTED CATEGORY / SELECTED BRAND LIST VIEW */}
-      {(activeTab === "products" ||
+      {!(isRestaurant && activeTab === "products" && !selectedCategory && !selectedBrand) &&
+       (activeTab === "products" ||
         activeTab === "lowStock" ||
         activeTab === "restock" ||
+        (isRestaurant && selectedCategory) ||
         selectedSubcategory ||
         selectedBrand) && (
         <>
           <TextInput
-            placeholder="Search product, brand, barcode..."
+            placeholder={isRestaurant ? "Search food dishes, categories..." : "Search product, brand, barcode..."}
             placeholderTextColor={darkMode ? "#94a3b8" : "#64748b"}
             value={searchText}
             onChangeText={setSearchText}
@@ -1920,14 +2211,24 @@ export default function InventoryScreen({ appMode }) {
             numColumns={isLandscape ? 2 : 1}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{ paddingHorizontal: 2, paddingBottom: isLandscape ? 180 : 135 }}
-            ListEmptyComponent={<Text style={{ padding: 20, color: theme.subText, textAlign: "center" }}>{selectedSubcategory ? "No products found in this subcategory." : "No products found."}</Text>}
-                    renderItem={({ item, index }) => {
+            ListEmptyComponent={
+              <Text style={{ padding: 20, color: theme.subText, textAlign: "center" }}>
+                {isRestaurant
+                  ? (activeTab === "lowStock"
+                      ? "No sold out or low stock dishes. All foods are active!"
+                      : "No food dishes found.")
+                  : (selectedSubcategory
+                      ? "No products found in this subcategory."
+                      : "No products found.")}
+              </Text>
+            }
+            renderItem={({ item, index }) => {
               const itemPricing = getEffectiveProductPrice(item);
               const shownPrice = itemPricing.valid ? itemPricing.effectivePrice : Number(item.salesPrice) || 0;
               const planLimit = userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
               
               // Dynamic locking logic based on Plan & User-Selected Allowed Products
-              const isLocked = planLimit !== -1 && items.length > planLimit && (
+              const isLocked = !isRestaurant && planLimit !== -1 && items.length > planLimit && (
                 selectedAllowedIds.length > 0 
                   ? !selectedAllowedIds.includes(item.id) 
                   : index >= planLimit
@@ -1960,7 +2261,7 @@ export default function InventoryScreen({ appMode }) {
                   <View style={{ flexDirection: "row", width: "100%", alignItems: "center" }}>
                     <View style={styles.leftSection}>
                       <Image
-                        source={{ uri: item.image || "https://via.placeholder.com/150" }}
+                        source={{ uri: item.imageUrl || item.image || "https://via.placeholder.com/150" }}
                         style={styles.image}
                       />
                       {item.createdAt &&
@@ -1979,12 +2280,27 @@ export default function InventoryScreen({ appMode }) {
 
                     <View style={styles.details}>
                       <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>
-                        {item.itemName || "No Name"}
+                        {item.itemName || item.name || "No Name"}
                       </Text>
                       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
-                        <View style={styles.brandTag}>
-                          <Text style={styles.brandText}>{item.brand || "No Brand"}</Text>
-                        </View>
+                        {isRestaurant ? (
+                          <>
+                            <View style={[styles.brandTag, { backgroundColor: item.dietType === "non-veg" ? (darkMode ? "#450a0a" : "#fee2e2") : item.dietType === "egg" ? (darkMode ? "#451a03" : "#fef3c7") : (darkMode ? "#064e3b" : "#dcfce7") }]}>
+                              <Text style={[styles.brandText, { color: item.dietType === "non-veg" ? "#dc2626" : item.dietType === "egg" ? "#d97706" : "#16a34a", fontWeight: "bold" }]}>
+                                {item.dietType === "non-veg" ? "🍗 Non-Veg" : item.dietType === "egg" ? "🥚 Egg" : "🌱 Pure Veg"}
+                              </Text>
+                            </View>
+                            {item.category ? (
+                              <View style={[styles.brandTag, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]}>
+                                <Text style={[styles.brandText, { color: theme.subText }]}>{item.category}</Text>
+                              </View>
+                            ) : null}
+                          </>
+                        ) : (
+                          <View style={styles.brandTag}>
+                            <Text style={styles.brandText}>{item.brand || "No Brand"}</Text>
+                          </View>
+                        )}
                         {item.size ? (
                           <View style={[styles.brandTag, { backgroundColor: darkMode ? "#064e3b" : "#ecfdf3" }]}>
                             <Text style={[styles.brandText, { color: "#16a34a" }]}>
@@ -2009,15 +2325,33 @@ export default function InventoryScreen({ appMode }) {
                           </View>
                         </View>
                       ) : <Text style={[styles.price, { color: theme.text }]}>₹ {shownPrice}</Text>}
-                      {item.quantity <= 5 && item.quantity > 0 && (
-                        <Text style={{ color: "orange", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
-                          ⚠ Low Stock
-                        </Text>
-                      )}
-                      {item.quantity === 0 && (
-                        <Text style={{ color: "red", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
-                          ‼ Out Of Stock
-                        </Text>
+                      {isRestaurant ? (
+                        item.isAvailable === false ? (
+                          <Text style={{ color: "#ef4444", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
+                            ‼ Sold Out / Unavailable
+                          </Text>
+                        ) : (item.quantity <= 5 && item.quantity > 0) ? (
+                          <Text style={{ color: "orange", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
+                            ⚠ Low Stock ({item.quantity})
+                          </Text>
+                        ) : (
+                          <Text style={{ color: "#10b981", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
+                            ✔ Available
+                          </Text>
+                        )
+                      ) : (
+                        <>
+                          {item.quantity <= 5 && item.quantity > 0 && (
+                            <Text style={{ color: "orange", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
+                              ⚠ Low Stock
+                            </Text>
+                          )}
+                          {item.quantity === 0 && (
+                            <Text style={{ color: "red", fontWeight: "bold", marginTop: 4, fontSize: 11 }}>
+                              ‼ Out Of Stock
+                            </Text>
+                          )}
+                        </>
                       )}
                     </View>
 
@@ -2030,12 +2364,16 @@ export default function InventoryScreen({ appMode }) {
                       <Text
                         style={[styles.qtyLarge, { color: darkMode ? "#38bdf8" : "#4f46e5" }]}
                       >
-                        {item.quantity || 0}
+                        {isRestaurant
+                          ? (item.isAvailable !== false ? "✔" : "✕")
+                          : (item.quantity || 0)}
                       </Text>
                       <Text
                         style={[styles.qtyLabel, { color: darkMode ? "#94a3b8" : "#6366f1" }]}
                       >
-                        {item.unitType || "Qty"}
+                        {isRestaurant
+                          ? (item.isAvailable !== false ? "In Stock" : "Sold Out")
+                          : (item.unitType || "Qty")}
                       </Text>
                     </View>
                   </View>
@@ -2070,67 +2408,106 @@ export default function InventoryScreen({ appMode }) {
 
                   {/* Bottom Action Buttons */}
                   <View style={styles.actionRow}>
-                    {activeTab === "restock" ? (
+                    {isRestaurant ? (
                       <>
                         <TouchableOpacity
-                          style={[styles.editBtn, { backgroundColor: "#10b981" }, isLocked && { backgroundColor: "#94a3b8" }]}
-                          disabled={isLocked}
-                          onPress={() => openRestockModal(item)}
+                          style={[
+                            styles.editBtn,
+                            { backgroundColor: item.isAvailable !== false ? "#10b981" : "#ef4444" }
+                          ]}
+                          onPress={() => handleToggleFoodAvailability(item)}
                         >
-                          <MaterialCommunityIcons name="plus-box" size={16} color="#fff" />
-                          <Text style={styles.btnText}> Restock</Text>
+                          <MaterialCommunityIcons
+                            name={item.isAvailable !== false ? "check-circle" : "close-circle"}
+                            size={16}
+                            color="#fff"
+                          />
+                          <Text style={styles.btnText}>
+                            {item.isAvailable !== false ? " In Stock" : " Turn On"}
+                          </Text>
                         </TouchableOpacity>
 
-                        <TouchableOpacity 
-                          style={[styles.editBtn, { backgroundColor: "#ef4444" }, (isLocked || (item.quantity || 0) <= 0) && { backgroundColor: "#94a3b8" }]} 
-                          disabled={isLocked || (item.quantity || 0) <= 0}
-                          onPress={() => openExpireModal(item)}
+                        <TouchableOpacity
+                          style={[styles.editBtn, { backgroundColor: "#6366f1" }]}
+                          onPress={() => navigation.navigate("Scan", { itemToEdit: item })}
                         >
-                          <MaterialCommunityIcons name="calendar-remove" size={15} color="#fff" />
-                          <Text style={styles.btnText}> Expire</Text>
+                          <MaterialCommunityIcons name="pencil" size={16} color="#fff" />
+                          <Text style={styles.btnText}> Edit</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[styles.deleteBtn, { backgroundColor: "#ef4444" }]}
+                          onPress={() => handleDeleteFood(item)}
+                        >
+                          <MaterialCommunityIcons name="delete" size={16} color="#fff" />
+                          <Text style={styles.btnText}> Delete</Text>
                         </TouchableOpacity>
                       </>
                     ) : (
                       <>
-                        {activeTab === "lowStock" ? (
-                          <TouchableOpacity
-                            style={[styles.editBtn, { backgroundColor: "#10b981" }, isLocked && { backgroundColor: "#94a3b8" }]}
-                            disabled={isLocked}
-                            onPress={() => openRestockModal(item)}
-                          >
-                            <MaterialCommunityIcons name="plus-box" size={16} color="#fff" />
-                            <Text style={styles.btnText}> Restock</Text>
-                          </TouchableOpacity>
+                        {activeTab === "restock" ? (
+                          <>
+                            <TouchableOpacity
+                              style={[styles.editBtn, { backgroundColor: "#10b981" }, isLocked && { backgroundColor: "#94a3b8" }]}
+                              disabled={isLocked}
+                              onPress={() => openRestockModal(item)}
+                            >
+                              <MaterialCommunityIcons name="plus-box" size={16} color="#fff" />
+                              <Text style={styles.btnText}> Restock</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity 
+                              style={[styles.editBtn, { backgroundColor: "#ef4444" }, (isLocked || (item.quantity || 0) <= 0) && { backgroundColor: "#94a3b8" }]} 
+                              disabled={isLocked || (item.quantity || 0) <= 0}
+                              onPress={() => openExpireModal(item)}
+                            >
+                              <MaterialCommunityIcons name="calendar-remove" size={15} color="#fff" />
+                              <Text style={styles.btnText}> Expire</Text>
+                            </TouchableOpacity>
+                          </>
                         ) : (
-                          <TouchableOpacity 
-                            style={[styles.editBtn, isLocked && { backgroundColor: "#94a3b8" }]} 
-                            disabled={isLocked}
-                            onPress={() => openEdit(item)}
-                          >
-                            <MaterialCommunityIcons name="pencil" size={16} color="#fff" />
-                            <Text style={styles.btnText}> Edit</Text>
-                          </TouchableOpacity>
+                          <>
+                            {activeTab === "lowStock" ? (
+                              <TouchableOpacity
+                                style={[styles.editBtn, { backgroundColor: "#10b981" }, isLocked && { backgroundColor: "#94a3b8" }]}
+                                disabled={isLocked}
+                                onPress={() => openRestockModal(item)}
+                              >
+                                <MaterialCommunityIcons name="plus-box" size={16} color="#fff" />
+                                <Text style={styles.btnText}> Restock</Text>
+                              </TouchableOpacity>
+                            ) : (
+                              <TouchableOpacity 
+                                style={[styles.editBtn, isLocked && { backgroundColor: "#94a3b8" }]} 
+                                disabled={isLocked}
+                                onPress={() => openEdit(item)}
+                              >
+                                <MaterialCommunityIcons name="pencil" size={16} color="#fff" />
+                                <Text style={styles.btnText}> Edit</Text>
+                              </TouchableOpacity>
+                            )}
+
+                            <TouchableOpacity 
+                              style={[styles.editBtn, { backgroundColor: "#ef4444" }, (isLocked || (item.quantity || 0) <= 0) && { backgroundColor: "#94a3b8" }]} 
+                              disabled={isLocked || (item.quantity || 0) <= 0}
+                              onPress={() => openExpireModal(item)}
+                            >
+                              <MaterialCommunityIcons name="calendar-remove" size={15} color="#fff" />
+                              <Text style={styles.btnText}> Expire</Text>
+                            </TouchableOpacity>
+                          </>
                         )}
 
                         <TouchableOpacity 
-                          style={[styles.editBtn, { backgroundColor: "#ef4444" }, (isLocked || (item.quantity || 0) <= 0) && { backgroundColor: "#94a3b8" }]} 
-                          disabled={isLocked || (item.quantity || 0) <= 0}
-                          onPress={() => openExpireModal(item)}
+                          style={[styles.deleteBtn, isLocked && { backgroundColor: "#94a3b8" }]} 
+                          disabled={isLocked}
+                          onPress={() => deleteItem(item.id)}
                         >
-                          <MaterialCommunityIcons name="calendar-remove" size={15} color="#fff" />
-                          <Text style={styles.btnText}> Expire</Text>
+                          <MaterialCommunityIcons name="delete" size={16} color="#fff" />
+                          <Text style={styles.btnText}> Delete</Text>
                         </TouchableOpacity>
                       </>
                     )}
-
-                    <TouchableOpacity 
-                      style={[styles.deleteBtn, isLocked && { backgroundColor: "#94a3b8" }]} 
-                      disabled={isLocked}
-                      onPress={() => deleteItem(item.id)}
-                    >
-                      <MaterialCommunityIcons name="delete" size={16} color="#fff" />
-                      <Text style={styles.btnText}> Delete</Text>
-                    </TouchableOpacity>
                   </View>
                 </View>
               );
@@ -3345,7 +3722,7 @@ export default function InventoryScreen({ appMode }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 15, backgroundColor: "#f8fafc" },
+  container: { flex: 1, padding: 15, paddingTop: Platform.OS === "ios" ? 44 : 15, backgroundColor: "#f8fafc" },
   title: { fontSize: 22, fontWeight: "bold", color: "#1e293b" },
   menuCard: {
     backgroundColor: "#ffffff",
@@ -3550,3 +3927,40 @@ const styles = StyleSheet.create({
     justifyContent: "center"
   }
 });
+
+export default function InventoryScreen(props) {
+  const routeRest = Boolean(props.route?.params?.isRestaurant || props.isRestaurant);
+  const [isRestaurant, setIsRestaurant] = useState(routeRest);
+  const [loading, setLoading] = useState(!routeRest);
+
+  useEffect(() => {
+    let active = true;
+    const checkMode = async () => {
+      const user = auth.currentUser;
+      if (!user) {
+        if (active) setLoading(false);
+        return;
+      }
+      const cached = await getCachedShopType(user.uid);
+      if (cached && active) {
+        setIsRestaurant(isRestaurantShop(cached));
+        setLoading(false);
+      }
+      const { isRestaurant: isRest } = await fetchAndCacheShopType(user.uid);
+      if (active) {
+        setIsRestaurant(isRest);
+        setLoading(false);
+      }
+    };
+    checkMode();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (loading) {
+    return <View style={{ flex: 1, backgroundColor: "#f8fafc" }} />;
+  }
+
+  return <RetailInventoryScreen {...props} isRestaurant={isRestaurant} />;
+}

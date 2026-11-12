@@ -1,0 +1,232 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /staffs/{staffId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    match /kitchen_orders/{orderId} {
+      allow read, write: if true;
+    }
+
+    match /{path=**}/inventory/{itemId} {
+      allow read: if true;
+    }
+    match /{path=**}/global_inventory/{itemId} {
+      allow read: if true;
+    }
+
+    /* ================= USERS (STORES) ================= */
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if request.auth != null && (request.auth.uid == userId || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "master");
+
+      match /inventory/{itemId} {
+        allow read, write: if true; /* வெப்சைட் மற்றும் மொபைல் ஆப் இரண்டிற்கும் தடையின்றி டேட்டா கிடைக்க அனுமதிக்கப்பட்டுள்ளது */
+      }
+      match /global_inventory/{itemId} {
+        allow read, write: if true;
+      }
+      match /categories/{catId} {
+        allow read: if true;
+        allow write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      /* 🍳 RESTAURANT KITCHEN ORDERS (KOT) - Waiter, Kitchen & Master Access */
+      match /kitchen_orders/{orderId} {
+        allow read, write: if true;
+      }
+
+      /* 🌟 SEPARATE LOCAL & GLOBAL ORDERS SUB-COLLECTIONS */
+      match /local_orders/{orderId} {
+        allow create, update: if request.auth != null; 
+        allow read: if true; 
+        allow delete: if false;
+      }
+
+      match /global_orders/{orderId} {
+        allow create, update: if request.auth != null; 
+        allow read: if true; 
+        allow delete: if false;
+      }
+
+      /* Legacy support if needed */
+      match /orders/{orderId} {
+        allow create, update: if request.auth != null; 
+        allow read: if true; 
+        allow delete: if false;
+      }
+
+      match /staffs/{staffId} {
+        allow read: if true;
+        allow write: if request.auth != null;
+      }
+
+      match /{subCollection}/{docId} {
+        allow read: if true;
+        allow write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    /* ================= CUSTOMERS ================= */
+    match /customers/{customerId} {
+      allow create: if true;
+      allow read: if true;
+      allow update: if request.auth != null;
+      allow delete: if false;
+
+      match /orders/{orderId} {
+        allow create, read, update: if request.auth != null;
+        allow delete: if false;
+      }
+      match /cart/{cartDocId} {
+        allow read, write: if request.auth != null
+          && request.auth.uid == customerId;
+      }
+
+      match /saved_addresses/{addressId} {
+        allow read, write: if request.auth != null;
+      }
+    }
+
+    /* ================= PUBLIC SHOPS ================= */
+    match /public_shops/{shopId} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == shopId;
+    }
+
+    /* ================= LOCATION MASTER ================= */
+    match /location_master/{countryId} {
+
+      // Everyone can read locations
+      allow read: if true;
+
+      // Allow creating a new country during seller registration
+      allow create: if request.auth != null;
+
+      // Existing country can be updated only by authenticated user/master
+      allow update: if request.auth != null
+        && (
+          request.auth.uid == countryId
+          || get(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          ).data.role == "master"
+        );
+
+      // Only master can delete country
+      allow delete: if request.auth != null
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.role == "master";
+
+
+      /* ================= STATES ================= */
+
+      match /states/{stateId} {
+
+        allow read: if true;
+
+        // Seller registration can create new state
+        allow create: if request.auth != null;
+
+        // Existing state update requires authentication
+        allow update: if request.auth != null;
+
+        // Only master can delete
+        allow delete: if request.auth != null
+          && get(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          ).data.role == "master";
+
+
+        /* ================= DISTRICTS ================= */
+
+        match /districts/{districtId} {
+
+          allow read: if true;
+
+          // Seller registration can create new district
+          allow create: if request.auth != null;
+
+          // Existing district update requires authentication
+          allow update: if request.auth != null;
+
+          // Only master can delete
+          allow delete: if request.auth != null
+            && get(
+              /databases/$(database)/documents/users/$(request.auth.uid)
+            ).data.role == "master";
+
+
+          /* ================= CITIES ================= */
+
+          match /cities/{cityId} {
+
+            allow read: if true;
+
+            // Seller registration can create new city
+            allow create: if request.auth != null;
+
+            // Existing city update requires authentication
+            allow update: if request.auth != null;
+
+            // Only master can delete
+            allow delete: if request.auth != null
+              && get(
+                /databases/$(database)/documents/users/$(request.auth.uid)
+              ).data.role == "master";
+
+
+            /* ================= AREAS ================= */
+
+            match /areas/{areaId} {
+
+              allow read: if true;
+
+              // Seller registration can create new area
+              allow create: if request.auth != null;
+
+              // Existing area update requires authentication
+              allow update: if request.auth != null;
+
+              // Only master can delete
+              allow delete: if request.auth != null
+                && get(
+                  /databases/$(database)/documents/users/$(request.auth.uid)
+                ).data.role == "master";
+            }
+          }
+        }
+      }
+    }
+    /* ================= SHARED MAIN CATEGORIES ================= */
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+
+      match /subcategories/{subcategoryId} {
+        allow read: if true;
+        allow write: if request.auth != null;
+      }
+    }
+
+    /* ================= SETTINGS ================= */
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    match /global_ids/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /offer_requests/{requestId} {
+      allow create, read: if request.auth != null;
+      allow update: if request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "master";
+      allow delete: if false;
+    }
+  }
+}

@@ -18,6 +18,7 @@ import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import FastImage from "react-native-fast-image";
 
 import { saveSession } from "../utils/session";
+import { setCachedShopType } from "../utils/restaurantMode";
 import { auth, db } from "../utils/firebaseConfig";
 
 import {
@@ -84,6 +85,15 @@ export default function LoginScreen({ navigation }) {
 
       const userData = snap.data();
       const now = Date.now();
+      const userShopType = userData.shopType || "";
+
+      try {
+        if (userShopType) {
+          await setCachedShopType(uid, userShopType);
+        }
+      } catch (shopTypeErr) {
+        console.log("⚠️ Shop type cache error:", shopTypeErr);
+      }
 
       try {
         console.log("🔔 Starting seller FCM setup...");
@@ -98,12 +108,14 @@ export default function LoginScreen({ navigation }) {
         await saveSession({
           route: "Dashboard",
           uid: uid,
+          shopType: userShopType,
         });
         navigation.replace("Dashboard");
       } else {
         await saveSession({
           route: "Subscription",
           uid: uid,
+          shopType: userShopType,
         });
         navigation.replace("Subscription");
       }
@@ -209,7 +221,7 @@ export default function LoginScreen({ navigation }) {
                         { color: activeRole === "employee" ? "#ffffff" : (darkMode ? theme.subText : "#64748b") },
                       ]}
                     >
-                      Employee
+                      Staff
                     </Text>
                   </TouchableOpacity>
                 </View>

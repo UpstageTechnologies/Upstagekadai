@@ -57,6 +57,11 @@ import OrdersScreen from "./src/screens/OrdersScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import StaffCreationScreen from "./src/screens/StaffCreation";
 import StaffLoginScreen from "./src/screens/StaffLogin";
+import RestaurantSalesBilling from "./src/screens/restaurant/RestaurantSalesBilling";
+import AddFoodsScreen from "./src/screens/restaurant/AddFoodsScreen";
+import RestaurantMenuScreen from "./src/screens/restaurant/RestaurantMenuScreen";
+import WaiterOrderScreen from "./src/screens/restaurant/WaiterOrderScreen";
+import KitchenDisplayScreen from "./src/screens/restaurant/KitchenDisplayScreen";
 
 // ======================================================
 // Notification Service
@@ -89,11 +94,16 @@ type RootStackParamList = {
   Profile: undefined;
   Settings: undefined;
   Orders: { orderId?: string; status?: string; appMode?: string };
+  RestaurantBilling: undefined;
+  AddFoods: { editItem?: any } | undefined;
+  RestaurantMenu: undefined;
+  WaiterOrder: undefined;
+  KitchenDisplay: undefined;
 };
 
 type PendingNotificationNavigation = {
-  name: "Orders";
-  params: { orderId: string; status: string };
+  name: "Orders" | "Sales" | "RestaurantBilling";
+  params: any;
 };
 
 // ======================================================
@@ -169,12 +179,12 @@ function flushPendingNotificationNavigation() {
   const currentRoute = navigationRef.getCurrentRoute()?.name;
   // Wait for Splash/auth routing to settle. That provides the proper base route
   // (Dashboard) for a cold-start deep link and avoids bypassing sign-in.
-  if (currentRoute !== "Dashboard" && currentRoute !== "Orders") return;
+  if (currentRoute !== "Dashboard" && currentRoute !== "Orders" && currentRoute !== "Sales" && currentRoute !== "RestaurantBilling") return;
 
   const { name, params } = pendingNotificationNavigation;
   pendingNotificationNavigation = null;
   const rootState = navigationRef.getRootState();
-  if (currentRoute === "Orders" && rootState.routes.length === 1) {
+  if (currentRoute === "Orders" && rootState?.routes?.length === 1) {
     // Repair a root-only Orders state from an older app session so Back has a
     // valid fallback instead of exiting the application.
     navigationRef.resetRoot({
@@ -184,7 +194,7 @@ function flushPendingNotificationNavigation() {
     console.log("✅ Notification navigation restored Dashboard fallback", params);
     return;
   }
-  navigationRef.navigate(name, params);
+  navigationRef.navigate(name as any, params);
   console.log("✅ Notification navigation opened", name, params);
 }
 
@@ -197,7 +207,7 @@ function openNotificationDestination(
   const orderId = String(data?.orderId || "").trim();
   const status = String(data?.status || "");
 
-  if (screen !== "Orders" || !orderId) {
+  if ((screen !== "Orders" && screen !== "Sales" && screen !== "RestaurantBilling") || !orderId) {
     console.log("⚠️ Unsupported or incomplete notification payload:", data);
     return;
   }
@@ -221,23 +231,25 @@ function openNotificationDestination(
   }
 
   const params = { orderId, status };
+  const targetRoute = (screen === "RestaurantBilling" || screen === "Sales") ? "Sales" : "Orders";
+
   if (!navigationRef.isReady() || coldStart) {
-    pendingNotificationNavigation = { name: screen, params };
+    pendingNotificationNavigation = { name: targetRoute, params };
     flushPendingNotificationNavigation();
     return;
   }
 
   const currentRoute = navigationRef.getCurrentRoute()?.name;
   if (["Splash", "Onboarding", "Login", "LoginRoleSelection", "StaffLogin", "Register"].includes(currentRoute || "")) {
-    pendingNotificationNavigation = { name: screen, params };
+    pendingNotificationNavigation = { name: targetRoute, params };
     flushPendingNotificationNavigation();
     return;
   }
 
-  // navigate reuses an existing Orders route when present, preserving the
-  // user's current stack and avoiding duplicate Orders screens.
-  navigationRef.navigate("Orders", params);
-  console.log("✅ Notification destination opened", screen, params);
+  // navigate reuses existing route when present, preserving the
+  // user's current stack and avoiding duplicate screens.
+  navigationRef.navigate(targetRoute as any, params);
+  console.log("✅ Notification destination opened", targetRoute, params);
 }
 
 function App() {
@@ -414,6 +426,36 @@ function App() {
   }, []);
 
   // ======================================================
+  // 🎬 DEMO AUTOMATION LISTENER (For Studio Recording)
+  // ======================================================
+  useEffect(() => {
+    let lastCmd = "";
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("http://127.0.0.1:8765/nav", { method: "GET" });
+        const target = (await res.text()).trim();
+        if (target && target !== "idle" && target !== lastCmd && navigationRef.isReady()) {
+          lastCmd = target;
+          const [screen, paramsStr] = target.split("|");
+          const params = paramsStr ? JSON.parse(paramsStr) : undefined;
+          console.log("🎬 AUTOMATION NAVIGATE =>", screen, params);
+          if (screen === "RESET_ROOT") {
+            navigationRef.resetRoot({
+              index: 0,
+              routes: [{ name: params?.screen || "Dashboard", params: params?.params }],
+            });
+          } else {
+            navigationRef.navigate(screen as any, params);
+          }
+        }
+      } catch (e) {
+        // bridge idle
+      }
+    }, 250);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ======================================================
   // UI & NAVIGATION STACK
   // ======================================================
   return (
@@ -449,9 +491,14 @@ function App() {
             <Stack.Screen name="JournalEntry" component={JournalEntry} />
             <Stack.Screen name="Scan" component={ScanScreen} />
             <Stack.Screen name="Sales" component={SalesScreen} />
-            <Stack.Screen name="SalesHistory" component={SalesHistory} />
-            <Stack.Screen name="PurchaseHistory" component={PurchaseHistory} />
+            <Stack.Screen name="SalesHistory" component={SalesHistory as any} />
+            <Stack.Screen name="PurchaseHistory" component={PurchaseHistory as any} />
             <Stack.Screen name="Inventory" component={InventoryScreen} />
+            <Stack.Screen name="RestaurantBilling" component={RestaurantSalesBilling as any} />
+            <Stack.Screen name="AddFoods" component={AddFoodsScreen as any} />
+            <Stack.Screen name="RestaurantMenu" component={RestaurantMenuScreen as any} />
+            <Stack.Screen name="WaiterOrder" component={WaiterOrderScreen as any} />
+            <Stack.Screen name="KitchenDisplay" component={KitchenDisplayScreen as any} />
             <Stack.Screen name="Subscription" component={SubscriptionScreen} />
             <Stack.Screen name="DemoLogin" component={DemoLogin} />
             <Stack.Screen name="StaffCreation" component={StaffCreationScreen} />

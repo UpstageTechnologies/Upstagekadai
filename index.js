@@ -9,11 +9,8 @@ import App from './App';
 import { name as appName } from './app.json';
 import { PENDING_NOTIFICATION_PRESS_KEY } from './src/utils/notification/notifications';
 
-// 🛡️ Firebase offline popup-ah dev mode-la suppress panna
-LogBox.ignoreLogs([
-    'FirebaseError: Failed to get document because the client is offline',
-    'Possible Unhandled Promise Rejection',
-]);
+// 🛡️ Suppress dev overlays for clean video recording
+LogBox.ignoreAllLogs(true);
 
 notifee.onBackgroundEvent(async ({ type, detail }) => {
     if (type !== EventType.PRESS) return;

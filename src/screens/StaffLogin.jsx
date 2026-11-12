@@ -17,7 +17,7 @@ import {
   Keyboard,
 } from "react-native";
 import { db } from "../utils/firebaseConfig";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, getDocs, collection, updateDoc } from "firebase/firestore";
 import { saveSession } from "../utils/session";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
@@ -61,13 +61,52 @@ export default function StaffLoginScreen({ navigation }) {
       const staffData = staffSnap.data();
 
       if (staffData.password === password) {
+        const staffRole = staffData.role || "employee";
+        let targetRoute = "Dashboard";
+        if (staffRole === "waiter") {
+          targetRoute = "WaiterOrder";
+        } else if (staffRole === "kitchen") {
+          targetRoute = "KitchenDisplay";
+        } else if (staffRole === "delivery") {
+          targetRoute = "Orders";
+        }
+
+        let masterUid =
+          staffData.masterUid ||
+          staffData.ownerUid ||
+          staffData.userId ||
+          staffData.uid ||
+          "";
+
+        // Auto-heal masterUid if missing on root staff doc
+        if (!masterUid) {
+          try {
+            const usersSnap = await getDocs(collection(db, "users"));
+            for (const uDoc of usersSnap.docs) {
+              const subStaffSnap = await getDoc(
+                doc(db, "users", uDoc.id, "staffs", trimmedId)
+              );
+              if (subStaffSnap.exists()) {
+                masterUid = uDoc.id;
+                try {
+                  await updateDoc(staffDocRef, { masterUid: uDoc.id });
+                } catch (e) {}
+                break;
+              }
+            }
+          } catch (e) {
+            console.log("Auto-heal masterUid error:", e);
+          }
+        }
+
         await saveSession({
-          route: "Dashboard",
-          uid: staffData.masterUid,
-          staffId: staffData.staffId,
-          role: "employee",
+          route: targetRoute,
+          uid: masterUid,
+          staffId: staffData.staffId || trimmedId,
+          staffName: staffData.name || "Staff",
+          role: staffRole,
         });
-        navigation.replace("Dashboard");
+        navigation.replace(targetRoute);
       } else {
         showAlert("Login Failed", "Incorrect password. Please try again.");
       }
@@ -118,7 +157,7 @@ export default function StaffLoginScreen({ navigation }) {
                       style={{ marginRight: 6 }}
                     />
                     <Text style={[styles.roleTabText, styles.roleTabTextActive]}>
-                      Employee
+                      Staff
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -130,10 +169,10 @@ export default function StaffLoginScreen({ navigation }) {
                 />
 
                 <Text style={styles.title}>Staff Portal</Text>
-                <Text style={styles.subtitle}>Enter your Staff ID & Password</Text>
+                <Text style={styles.subtitle}>Sign in with your Staff ID & Password</Text>
 
                 <TextInput
-                  placeholder="Staff ID (e.g., MP2026001)"
+                  placeholder="Staff ID"
                   placeholderTextColor="#94a3b8"
                   style={styles.input}
                   value={staffId}

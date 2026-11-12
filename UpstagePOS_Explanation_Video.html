@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upstage POS - Explanation Video & Interactive Demo</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; transform: scale(1); }
+      50% { opacity: 0.8; transform: scale(1.05); }
+    }
+    @keyframes scanLine {
+      0% { top: 10%; opacity: 0; }
+      20% { opacity: 1; }
+      80% { opacity: 1; }
+      100% { top: 90%; opacity: 0; }
+    }
+    @keyframes slideUp {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .animate-scan {
+      animation: scanLine 2s ease-in-out infinite;
+    }
+    .animate-glow {
+      animation: pulseGlow 4s ease-in-out infinite;
+    }
+    .slide-in {
+      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.05);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(99, 102, 241, 0.4);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+
+  <!-- TOP HEADER & CONTROLS -->
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50 px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/30 overflow-hidden p-1">
+        <img src="logo.png" alt="Logo" class="w-full h-full object-contain" onerror="this.onerror=null; this.parentElement.innerHTML='<span class=\'font-bold text-white text-lg\'>UP</span>';">
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="font-bold text-lg text-white tracking-tight">Upstage POS</h1>
+          <span class="text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full font-medium">Demo Video</span>
+        </div>
+        <p class="text-xs text-slate-400">All-in-One Smart Billing for Retail & Restaurant</p>
+      </div>
+    </div>
+
+    <!-- AUDIO / NARRATION & VIDEO ACTIONS -->
+    <div class="flex items-center gap-2 flex-wrap">
+      <!-- Voice Toggle -->
+      <button id="voiceToggleBtn" class="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg transition" title="Toggle Voiceover Narration">
+        <span id="voiceIcon">🔊</span>
+        <span id="voiceLabel">Voice: Tamil / Tanglish</span>
+      </button>
+
+      <!-- Language Selector -->
+      <select id="langSelect" class="text-xs bg-slate-800 text-slate-200 border border-slate-700 px-2 py-1.5 rounded-lg focus:outline-none focus:border-indigo-500">
+        <option value="ta" selected>தமிழ் (Tamil)</option>
+        <option value="en">English</option>
+      </select>
+
+      <!-- Record Video Button -->
+      <button id="recordBtn" class="flex items-center gap-1.5 text-xs bg-rose-600 hover:bg-rose-500 text-white font-medium px-3 py-1.5 rounded-lg shadow transition">
+        <span id="recDot" class="w-2 h-2 rounded-full bg-white animate-ping"></span>
+        <span id="recText">Record / Export MP4</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN VIDEO STAGE AREA -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+    
+    <!-- LEFT: MOCKUP SCREEN (MOBILE DEVICE FRAME) -->
+    <div class="lg:col-span-5 flex justify-center">
+      <div class="relative w-[310px] sm:w-[330px] h-[640px] bg-slate-900 rounded-[44px] p-3 shadow-2xl shadow-indigo-950/60 border-4 border-slate-800 ring-1 ring-slate-700/50 flex flex-col">
+        
+        <!-- Phone Speaker & Camera Notch -->
+        <div class="absolute top-4 left-1/2 -translate-x-1/2 w-28 h-4 bg-slate-950 rounded-full z-40 flex items-center justify-end px-3">
+          <div class="w-2.5 h-2.5 rounded-full bg-slate-800 ring-1 ring-slate-700"></div>
+        </div>
+
+        <!-- Phone Screen Content View -->
+        <div id="phoneScreen" class="w-full h-full bg-slate-950 rounded-[34px] overflow-hidden flex flex-col relative border border-slate-800/80">
+          <!-- Dynamic Content rendered by JS -->
+        </div>
+
+        <!-- Home Bar Indicator -->
+        <div class="absolute bottom-2 left-1/2 -translate-x-1/2 w-32 h-1 bg-slate-700 rounded-full"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: SCENE DETAILS, SCRIPT NARRATION & CONTROLS -->
+    <div class="lg:col-span-7 flex flex-col gap-4">
+      
+      <!-- CURRENT SCENE BADGE & TITLE -->
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+        <div class="absolute -right-10 -bottom-10 w-40 h-40 bg-indigo-600/10 rounded-full blur-2xl pointer-events-none"></div>
+
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span id="sceneBadge" class="px-2.5 py-1 text-xs font-bold rounded-md bg-indigo-600/30 text-indigo-400 border border-indigo-500/30">
+              Scene 1 / 7
+            </span>
+            <span id="sceneCategory" class="text-xs text-slate-400 font-medium tracking-wide uppercase">
+              Introduction
+            </span>
+          </div>
+          <span id="sceneTimer" class="text-xs font-mono text-slate-400 bg-slate-800 px-2.5 py-1 rounded-md">
+            00:00 / 02:20
+          </span>
+        </div>
+
+        <h2 id="sceneHeading" class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-2">
+          Upstage POS - Smart Digital Billing
+        </h2>
+        <p id="sceneSubHeading" class="text-sm sm:text-base text-indigo-300 font-medium mb-4">
+          உங்கள் கடையை அடுத்த கட்டத்திற்கு கொண்டு செல்லும் முழுமையான ஆப்!
+        </p>
+
+        <!-- Bullet Highlights -->
+        <div id="sceneBullets" class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs sm:text-sm text-slate-300">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <!-- VOICE SCRIPT & SUBTITLE TELEPROMPTER -->
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            Voiceover Narration (குரல் பதிவு வரிகள்)
+          </span>
+          <button id="speakNowBtn" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+            ▶ Repeat Voice
+          </button>
+        </div>
+        
+        <!-- Script text box -->
+        <div id="scriptDisplay" class="text-sm text-slate-200 leading-relaxed font-sans bg-slate-950/70 p-3.5 rounded-xl border border-slate-800/60 min-h-[75px]">
+          <!-- Script text inserted here -->
+        </div>
+
+        <!-- English Subtitle translation -->
+        <div id="subtitleDisplay" class="mt-2 text-xs text-slate-400 italic px-1">
+          <!-- English translation inserted here -->
+        </div>
+      </div>
+
+      <!-- VIDEO TIMELINE & PLAYER CONTROLS -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
+        <!-- Progress Bar -->
+        <div class="relative w-full h-2 bg-slate-800 rounded-full overflow-hidden cursor-pointer" id="progressBarContainer">
+          <div id="progressBar" class="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-300" style="width: 14%;"></div>
+        </div>
+
+        <!-- Buttons row -->
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div class="flex items-center gap-2">
+            <button id="prevBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            </button>
+            <button id="playPauseBtn" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold flex items-center gap-2 transition shadow-lg shadow-indigo-600/30">
+              <span id="playIcon">⏸</span>
+              <span id="playText">Pause</span>
+            </button>
+            <button id="nextBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </button>
+            <button id="restartBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Restart Video">
+              ↺
+            </button>
+          </div>
+
+          <!-- Scene Quick Navigation Pills -->
+          <div class="flex items-center gap-1.5 overflow-x-auto py-1 max-w-full">
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-indigo-600 text-white" data-scene="0">1. Intro</button>
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700" data-scene="1">2. Dual Mode</button>
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700" data-scene="2">3. Fast Billing</button>
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700" data-scene="3">4. Inventory</button>
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700" data-scene="4">5. Restaurant</button>
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700" data-scene="5">6. Analytics</button>
+            <button class="scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700" data-scene="6">7. Ready!</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- BOTTOM MARKETING BANNER -->
+  <footer class="mt-auto border-t border-slate-800 bg-slate-900/60 px-4 py-3 text-center text-xs text-slate-400">
+    Designed for <strong class="text-white">Upstage POS (Upstage Kadai)</strong> • React Native, Firebase, Offline First & Thermal Printer Ready.
+  </footer>
+
+  <!-- SCRIPT DEFINITIONS & ENGINE -->
+  <script>
+    // SCENES DATA MODEL
+    const scenes = [
+      {
+        id: 0,
+        category: "Introduction",
+        title: "Upstage POS - The Next Gen Billing App",
+        tamilTitle: "உங்கள் கடையை அடுத்த லெவலுக்கு மாற்றும் Upstage POS!",
+        duration: 12,
+        bullets: [
+          "✓ All-in-One POS System for Phones & Tablets",
+          "✓ Zero expensive desktop hardware needed",
+          "✓ Works 100% Offline with Auto-Sync",
+          "✓ Built specifically for Indian Small & Medium Businesses"
+        ],
+        scriptTa: "வணக்கம்! உங்கள் கடையை அல்லது ரெஸ்டாரண்டை மிக எளிதாக நிர்வகிக்க வேண்டுமா? இதோ உங்களுக்காக Upstage POS! எந்தவித காஸ்ட்லி மெஷினும் தேவையில்லை, உங்கள் மொபைல் அல்லது டேப்லெட் மூலமாகவே முழு பில்லிங், இன்வெண்டரி, மற்றும் கணக்குகளை எளிதாக முடிக்கலாம்!",
+        scriptEn: "Hello! Looking to manage your retail shop or restaurant with maximum ease? Here is Upstage POS! No expensive hardware required - manage billing, stock inventory, and day-to-day accounts straight from your mobile or tablet!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col justify-between p-5 bg-gradient-to-b from-indigo-950/70 via-slate-950 to-slate-950 slide-in">
+            <div class="pt-6 text-center">
+              <div class="w-16 h-16 mx-auto rounded-2xl bg-indigo-600/30 border border-indigo-500/50 flex items-center justify-center p-2 mb-3 shadow-xl">
+                <img src="logo.png" class="w-full h-full object-contain" onerror="this.src=''; this.alt='POS';">
+              </div>
+              <h3 class="text-xl font-black text-white">Upstage POS</h3>
+              <p class="text-xs text-indigo-400 font-medium">Smart Retail & Restaurant System</p>
+            </div>
+            
+            <div class="space-y-2.5 my-auto">
+              <div class="bg-slate-900/90 border border-indigo-500/30 p-3 rounded-xl flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">🛒</div>
+                <div>
+                  <div class="text-xs font-bold text-white">Retail & Supermarket</div>
+                  <div class="text-[10px] text-slate-400">Barcode, stock alerts & thermal print</div>
+                </div>
+              </div>
+              <div class="bg-slate-900/90 border border-emerald-500/30 p-3 rounded-xl flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg bg-emerald-600 flex items-center justify-center text-white font-bold text-sm">🍽️</div>
+                <div>
+                  <div class="text-xs font-bold text-white">Restaurant & Cafe</div>
+                  <div class="text-[10px] text-slate-400">Waiter orders, Kitchen Display (KDS)</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-2 pb-2">
+              <div class="w-full py-2.5 bg-indigo-600 rounded-xl text-center text-xs font-bold text-white shadow-lg shadow-indigo-600/40">
+                Login / Register Shop
+              </div>
+              <div class="text-center text-[10px] text-slate-500">14 Days Free Trial • Instant Setup</div>
+            </div>
+          </div>
+        `
+      },
+      {
+        id: 1,
+        category: "Dual Architecture",
+        title: "Dual Mode: Retail + Restaurant in One",
+        tamilTitle: "ஒரே ஆப் - மளிகை கடைக்கும் சரி, உணவகத்திற்கும் சரி!",
+        duration: 13,
+        bullets: [
+          "✓ Instant switch between Retail Store & Restaurant",
+          "✓ Custom workflow for retail barcodes or food tables",
+          "✓ Tailored billing screen for each business style",
+          "✓ Multi-branch & Master/Cashier role management"
+        ],
+        scriptTa: "Upstage POS-ன் மிகப்பெரிய சிறப்பம்சம் என்னவென்றால், இது மளிகை கடைகள், சூப்பர் மார்க்கெட் போன்ற ரீடெயில் கடைகளுக்கும் பொருந்தும்; ஹோட்டல், கஃபே போன்ற ரெஸ்டாரண்ட்டுகளுக்கும் பொருந்தும். ஒரே கிளிக்கில் உங்களுக்கு தேவையான மோடை மாற்றி பயன்படுத்தலாம்!",
+        scriptEn: "The standout feature of Upstage POS is its Dual Mode architecture. Whether you run a grocery supermarket or a busy dine-in restaurant/cafe, you can seamlessly activate the exact tailored interface designed for your workflow!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col p-4 bg-slate-950 slide-in">
+            <div class="pt-6 pb-2 border-b border-slate-800">
+              <span class="text-[10px] text-indigo-400 uppercase font-bold tracking-wider">Select Business Mode</span>
+              <h4 class="text-base font-bold text-white">Choose Your Workspace</h4>
+            </div>
+
+            <div class="my-auto space-y-3">
+              <div class="border-2 border-indigo-500 bg-indigo-950/30 rounded-2xl p-3.5 relative overflow-hidden">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-xs font-bold text-indigo-300">🏪 Retail & Grocery</span>
+                  <span class="text-[10px] bg-indigo-500 text-white px-2 py-0.5 rounded-full font-bold">Active</span>
+                </div>
+                <p class="text-[11px] text-slate-300">Fast barcode billing, GST invoices, inventory stock tracking & daily journal daybook.</p>
+              </div>
+
+              <div class="border border-slate-800 hover:border-emerald-500/50 bg-slate-900 rounded-2xl p-3.5 transition">
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-xs font-bold text-white">🍕 Restaurant & Cafe</span>
+                  <span class="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-bold">Switch</span>
+                </div>
+                <p class="text-[11px] text-slate-400">Table booking, live kitchen screen (KDS), waiter mobile ordering, KOT printing.</p>
+              </div>
+            </div>
+
+            <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-2.5 text-center text-xs text-slate-300">
+              🚀 Switching modes keeps your data organized and isolated!
+            </div>
+          </div>
+        `
+      },
+      {
+        id: 2,
+        category: "Retail Billing",
+        title: "Super-Fast Billing & Thermal Printing",
+        tamilTitle: "மின்னல் வேக பில்லிங் & புளூடூத் பிரிண்டிங்!",
+        duration: 15,
+        bullets: [
+          "✓ Fast Barcode Scanning via Camera or Bluetooth Scanner",
+          "✓ Dynamic UPI QR code generation for GPay & PhonePe",
+          "✓ Instant Thermal Receipt Print (58mm / 80mm ESC/POS)",
+          "✓ SMS & WhatsApp digital receipt sharing"
+        ],
+        scriptTa: "ரீடெயில் கடைகளில் கூட்டம் அதிகமிருக்கும் போது, பில்லிங் தாமதமே ஆகக்கூடாது. Upstage POS-ல் கேமரா அல்லது பார்கோடு ஸ்கேனர் மூலமாக சில வினாடிகளில் ஐட்டம் சேர்த்து, உடனடியாக UPI QR கோட் காட்டி பணம் பெறலாம். அடுத்த நொடியே புளூடூத் பிரிண்டரில் ரசீது வந்துவிடும்!",
+        scriptEn: "Rush hour at your store? No bottlenecks with Upstage POS! Scan barcodes instantly via device camera or external Bluetooth scanners, generate dynamic UPI payment QR codes on screen, and print receipts directly on thermal printers in seconds!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col p-4 bg-slate-950 slide-in">
+            <div class="pt-6 pb-2 flex items-center justify-between border-b border-slate-800">
+              <div>
+                <span class="text-[10px] text-emerald-400 font-bold uppercase">Sales Terminal</span>
+                <div class="text-sm font-bold text-white">Cart (3 Items)</div>
+              </div>
+              <span class="text-xs font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-500/40 px-2.5 py-1 rounded-lg">₹ 345.00</span>
+            </div>
+
+            <!-- Scanner Simulator -->
+            <div class="relative bg-slate-900 border border-slate-800 rounded-xl my-2 p-2 flex items-center gap-3 overflow-hidden">
+              <div class="w-10 h-10 rounded-lg bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                📷
+              </div>
+              <div class="flex-1">
+                <div class="text-[11px] font-bold text-white">Barcode Scanner Ready</div>
+                <div class="text-[10px] text-slate-400">Scanned: 8901030... (Milk Bread)</div>
+              </div>
+              <div class="absolute inset-0 bg-indigo-500/10 pointer-events-none border-b border-indigo-400 animate-scan"></div>
+            </div>
+
+            <!-- Cart Items -->
+            <div class="space-y-1.5 flex-1 overflow-hidden my-1">
+              <div class="flex justify-between items-center bg-slate-900/60 p-2 rounded-lg text-xs">
+                <span class="text-slate-200">1x Aashirvaad Atta 1kg</span>
+                <span class="font-bold text-white">₹ 65.00</span>
+              </div>
+              <div class="flex justify-between items-center bg-slate-900/60 p-2 rounded-lg text-xs">
+                <span class="text-slate-200">2x Britannia Milk Bread</span>
+                <span class="font-bold text-white">₹ 80.00</span>
+              </div>
+              <div class="flex justify-between items-center bg-slate-900/60 p-2 rounded-lg text-xs">
+                <span class="text-slate-200">1x Tata Tea Gold 250g</span>
+                <span class="font-bold text-white">₹ 200.00</span>
+              </div>
+            </div>
+
+            <!-- Receipt & Thermal Print Action -->
+            <div class="bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-2.5 flex items-center justify-between">
+              <div class="text-[11px]">
+                <span class="text-slate-400">Thermal Printer:</span>
+                <strong class="text-indigo-300 block">Connected (BT 58mm)</strong>
+              </div>
+              <span class="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-bold">Print Bill 🖨️</span>
+            </div>
+          </div>
+        `
+      },
+      {
+        id: 3,
+        category: "Stock Management",
+        title: "Smart Inventory & Expiry Tracking",
+        tamilTitle: "சரக்கு இருப்பு & காலாவதி தேதி எச்சரிக்கை!",
+        duration: 14,
+        bullets: [
+          "✓ Real-time stock decrement on every sale",
+          "✓ Automatic low stock notifications",
+          "✓ Expired products warning before loss occurs",
+          "✓ HSN code lookup directory & GST compliance"
+        ],
+        scriptTa: "கடையின் மிக முக்கியமான விஷயம் சரக்கு இருப்பு. Upstage POS-ல் ஒவ்வொரு முறை பில் போடும் போதும் ஸ்டாக் தானாக குறையும். பொருள் தீரும் போது 'Low Stock Alert' கொடுக்கும். முக்கியமாக, காலாவதி தேதியை முன்னரே அறிந்து நஷ்டத்தை தவிர்க்கலாம்!",
+        scriptEn: "Inventory is the heart of retail. Upstage POS tracks stock counts in real time with automated low-stock warnings. Plus, its unique expired-products monitor alerts you before items pass their expiry date, preventing revenue loss!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col p-4 bg-slate-950 slide-in">
+            <div class="pt-6 pb-2 border-b border-slate-800 flex justify-between items-center">
+              <div>
+                <span class="text-[10px] text-amber-400 font-bold uppercase">Inventory Control</span>
+                <div class="text-sm font-bold text-white">Stock & Expiry</div>
+              </div>
+              <span class="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold">120 Items</span>
+            </div>
+
+            <div class="space-y-2 my-auto">
+              <!-- Item 1: Expiring Alert -->
+              <div class="bg-rose-950/40 border border-rose-500/40 p-2.5 rounded-xl">
+                <div class="flex justify-between items-center mb-1">
+                  <span class="text-xs font-bold text-rose-300">Amul Fresh Milk 500ml</span>
+                  <span class="text-[9px] bg-rose-600 text-white font-bold px-1.5 py-0.5 rounded">Expires in 2 Days!</span>
+                </div>
+                <div class="text-[10px] text-slate-400 flex justify-between">
+                  <span>Batch: #B892</span>
+                  <span class="text-rose-400 font-semibold">Qty left: 8 units</span>
+                </div>
+              </div>
+
+              <!-- Item 2: Low Stock Alert -->
+              <div class="bg-amber-950/40 border border-amber-500/40 p-2.5 rounded-xl">
+                <div class="flex justify-between items-center mb-1">
+                  <span class="text-xs font-bold text-amber-300">Fortune Sunflower Oil 1L</span>
+                  <span class="text-[9px] bg-amber-600 text-white font-bold px-1.5 py-0.5 rounded">Low Stock</span>
+                </div>
+                <div class="text-[10px] text-slate-400 flex justify-between">
+                  <span>Reorder Level: 10</span>
+                  <span class="text-amber-400 font-semibold">Remaining: 2 packs</span>
+                </div>
+              </div>
+
+              <!-- Item 3: Healthy Stock -->
+              <div class="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+                <div class="flex justify-between items-center mb-1">
+                  <span class="text-xs font-bold text-slate-200">Basmati Rice Premium 5kg</span>
+                  <span class="text-[9px] bg-emerald-950 text-emerald-400 border border-emerald-500/30 font-bold px-1.5 py-0.5 rounded">In Stock</span>
+                </div>
+                <div class="text-[10px] text-slate-400 flex justify-between">
+                  <span>HSN: 100630</span>
+                  <span class="text-emerald-400 font-semibold">45 bags available</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="text-center text-[11px] text-indigo-400 bg-indigo-950/30 border border-indigo-500/20 py-2 rounded-xl">
+              📊 Export Full Inventory to Excel & PDF anytime
+            </div>
+          </div>
+        `
+      },
+      {
+        id: 4,
+        category: "Restaurant Mode",
+        title: "Waiter Mobile Orders & Kitchen Display (KDS)",
+        tamilTitle: "ரெஸ்டாரண்ட்: டேபிள் ஆர்டர் & லைவ் கிச்சன் ஸ்கிரீன்!",
+        duration: 15,
+        bullets: [
+          "✓ Waiter takes customer orders directly on mobile at table",
+          "✓ Real-time Kitchen Display System (KDS) for chef",
+          "✓ Instant status updates: Preparing ➔ Served ➔ Billed",
+          "✓ Food menu categorized with Veg / Non-Veg tags"
+        ],
+        scriptTa: "ஹோட்டல் மற்றும் ரெஸ்டாரண்ட்டுகளுக்கு Upstage POS ஒரு வரப்பிரசாதம்! சர்வர்கள் நேரடியாக டேபிளிலேயே மொபைல் மூலம் ஆர்டர் எடுக்கலாம். அந்த நொடியே கிச்சனில் இருக்கும் ஸ்கிரீனுக்கு ஆர்டர் சென்றுவிடும். செஃப் சமைத்து முடித்ததும் 'Served' என்று மாற்றி பில் போட்டுவிடலாம்!",
+        scriptEn: "For restaurants and cafes, Upstage POS powers a seamless live dining loop! Waiters punch orders at the table on mobile, orders flash instantly on the Kitchen Display Screen (KDS) for the chef, and billing is consolidated in one tap!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col p-4 bg-slate-950 slide-in">
+            <div class="pt-6 pb-2 border-b border-slate-800 flex justify-between items-center">
+              <div>
+                <span class="text-[10px] text-violet-400 font-bold uppercase">Restaurant Suite</span>
+                <div class="text-sm font-bold text-white">Table #4 • Dine-In</div>
+              </div>
+              <span class="text-xs bg-violet-950 text-violet-300 border border-violet-500/40 px-2.5 py-1 rounded-lg font-bold">Waiter App</span>
+            </div>
+
+            <!-- Waiter Menu Order -->
+            <div class="my-2 bg-slate-900 border border-slate-800 rounded-xl p-2.5 space-y-2">
+              <div class="flex items-center justify-between text-xs">
+                <span class="flex items-center gap-1.5 text-slate-200">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500"></span> Paneer Butter Masala
+                </span>
+                <span class="font-bold text-white">x 1</span>
+              </div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="flex items-center gap-1.5 text-slate-200">
+                  <span class="w-2 h-2 rounded-full bg-rose-500"></span> Chicken Biryani Special
+                </span>
+                <span class="font-bold text-white">x 2</span>
+              </div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="flex items-center gap-1.5 text-slate-200">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500"></span> Butter Naan
+                </span>
+                <span class="font-bold text-white">x 4</span>
+              </div>
+            </div>
+
+            <!-- Live Kitchen Display Screen (KDS) Card -->
+            <div class="bg-gradient-to-br from-indigo-950/80 to-slate-900 border-2 border-indigo-500/50 rounded-2xl p-3 my-auto">
+              <div class="flex justify-between items-center mb-1.5">
+                <span class="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">👨‍🍳 Kitchen Display (KDS)</span>
+                <span class="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded font-bold animate-pulse">Preparing</span>
+              </div>
+              <p class="text-[11px] text-slate-300">Live order received 2 mins ago for Table #4. Chef marks ready with one tap!</p>
+              <div class="mt-2.5 flex gap-2">
+                <span class="w-1/2 py-1 bg-emerald-600 rounded-lg text-center text-[10px] font-bold text-white">Mark Served</span>
+                <span class="w-1/2 py-1 bg-slate-800 rounded-lg text-center text-[10px] font-bold text-slate-300">Print KOT</span>
+              </div>
+            </div>
+
+            <div class="text-center text-[10px] text-slate-400">Zero paper confusion between waiter and kitchen!</div>
+          </div>
+        `
+      },
+      {
+        id: 5,
+        category: "Analytics & Offline",
+        title: "Analytics, Daybook & Offline Peace of Mind",
+        tamilTitle: "தினசரி லாபம், சேல்ஸ் ரிப்போர்ட் & ஆஃப்லைன் சப்போர்ட்!",
+        duration: 13,
+        bullets: [
+          "✓ Real-time revenue charts & profit-margin calculations",
+          "✓ Daybook / Journal Entry for daily expenses & cash in hand",
+          "✓ 100% Offline Support with OfflineBanner notification",
+          "✓ Automatic background synchronization when net reconnects"
+        ],
+        scriptTa: "கடை வியாபாரத்தில் லாபம் எவ்வளவு, செலவு எவ்வளவு என்பதை அறிந்து கொள்வது மிக அவசியம். Upstage POS-ல் டெய்லி ரிப்போர்ட் மற்றும் ப்ராஃபிட் சார்ட் கைக்குள் அடக்கம். இணைய இணைப்பு துண்டிக்கப்பட்டாலும் ஆஃப்லைனிலேயே பில்லிங் தொடரும், நெட் வந்ததும் ஆட்டோ-சின்க் ஆகிவிடும்!",
+        scriptEn: "Stay in control of your profits with insightful analytics and daybook records. Even if the internet drops, Upstage POS continues billing completely offline, seamlessly syncing data to the cloud the moment connectivity returns!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col p-4 bg-slate-950 slide-in">
+            <div class="pt-6 pb-2 border-b border-slate-800 flex justify-between items-center">
+              <div>
+                <span class="text-[10px] text-indigo-400 font-bold uppercase">Business Metrics</span>
+                <div class="text-sm font-bold text-white">Owner Dashboard</div>
+              </div>
+              <span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">Today</span>
+            </div>
+
+            <!-- Revenue Stats -->
+            <div class="grid grid-cols-2 gap-2 my-2">
+              <div class="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+                <span class="text-[10px] text-slate-400">Total Sales</span>
+                <div class="text-sm font-black text-white">₹ 24,850</div>
+                <span class="text-[9px] text-emerald-400">+18% vs yesterday</span>
+              </div>
+              <div class="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+                <span class="text-[10px] text-slate-400">Net Profit</span>
+                <div class="text-sm font-black text-emerald-400">₹ 6,420</div>
+                <span class="text-[9px] text-indigo-400">25.8% Margin</span>
+              </div>
+            </div>
+
+            <!-- Mini Chart Illustration -->
+            <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-2.5 my-auto">
+              <span class="text-[10px] text-slate-400 font-medium">Weekly Sales Trend</span>
+              <div class="h-16 flex items-end justify-between gap-1.5 pt-2 px-1">
+                <div class="w-full bg-indigo-600/40 rounded-t h-[40%]"></div>
+                <div class="w-full bg-indigo-600/50 rounded-t h-[65%]"></div>
+                <div class="w-full bg-indigo-600/60 rounded-t h-[50%]"></div>
+                <div class="w-full bg-indigo-600/70 rounded-t h-[80%]"></div>
+                <div class="w-full bg-indigo-600/90 rounded-t h-[60%]"></div>
+                <div class="w-full bg-indigo-500 rounded-t h-[95%]"></div>
+                <div class="w-full bg-emerald-500 rounded-t h-[100%]"></div>
+              </div>
+              <div class="flex justify-between text-[8px] text-slate-500 mt-1">
+                <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+              </div>
+            </div>
+
+            <!-- Offline Banner Indicator -->
+            <div class="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-2 flex items-center gap-2 text-[10px] text-emerald-300">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>Offline First • Local SQLite & Firebase Sync</span>
+            </div>
+          </div>
+        `
+      },
+      {
+        id: 6,
+        category: "Call to Action",
+        title: "Ready to Upgrade Your Business? Get Started!",
+        tamilTitle: "இன்றே உங்கள் கடையை டிஜிட்டல் ஆக்குங்கள்!",
+        duration: 12,
+        bullets: [
+          "✓ Android & iOS app with Multi-Staff permissions",
+          "✓ Easy setup in under 5 minutes",
+          "✓ Affordable monthly & annual subscription plans",
+          "✓ Dedicated support & regular feature updates"
+        ],
+        scriptTa: "இனி பில்லிங் மிஷினுக்கு லட்சக்கணக்கில் செலவு செய்ய வேண்டாம். இன்றே Upstage POS செயலியை இன்ஸ்டால் செய்து, உங்கள் வணிகத்தை நவீனமாக்குங்கள்! உங்கள் பிசினஸை எளிமையாக்கும் ஸ்மார்ட் பார்ட்னர் - Upstage POS!",
+        scriptEn: "Say goodbye to bulky, expensive billing machines. Download Upstage POS today, streamline your business, boost profits, and run smarter. Contact us now for a live demo!",
+        renderPhone: () => `
+          <div class="h-full flex flex-col justify-between p-5 bg-gradient-to-b from-indigo-950 via-slate-950 to-slate-950 text-center slide-in">
+            <div class="pt-8">
+              <div class="w-20 h-20 mx-auto rounded-3xl bg-indigo-600/40 border border-indigo-400/50 flex items-center justify-center p-2 mb-4 shadow-2xl animate-glow">
+                <img src="logo.png" class="w-full h-full object-contain" onerror="this.src=''; this.alt='POS';">
+              </div>
+              <h3 class="text-xl font-black text-white">Upstage POS</h3>
+              <p class="text-xs text-indigo-300 font-medium">Smart Billing & Business ERP</p>
+            </div>
+
+            <div class="space-y-2 my-auto">
+              <div class="bg-slate-900 border border-indigo-500/40 p-3 rounded-2xl">
+                <div class="text-xs font-bold text-white">14-Day Free Trial</div>
+                <div class="text-[10px] text-slate-400">No credit card required. Instant activation!</div>
+              </div>
+              <div class="text-xs text-emerald-400 font-semibold">
+                📱 Android & iOS Compatible
+              </div>
+            </div>
+
+            <div class="space-y-2 pb-2">
+              <button class="w-full py-3 bg-gradient-to-r from-indigo-500 to-violet-600 rounded-xl text-xs font-bold text-white shadow-xl shadow-indigo-600/50">
+                Book a Free Demo Now 🚀
+              </button>
+              <div class="text-[10px] text-slate-400">Upstage Kadai • Made for Smart Businesses</div>
+            </div>
+          </div>
+        `
+      }
+    ];
+
+    // STATE VARIABLES
+    let currentSceneIdx = 0;
+    let isPlaying = true;
+    let sceneTimer = null;
+    let speechSynth = window.speechSynthesis;
+    let speechUtterance = null;
+    let voiceEnabled = true;
+    let currentLang = "ta";
+    let elapsedSeconds = 0;
+    let totalDuration = scenes.reduce((acc, s) => acc + s.duration, 0);
+
+    // DOM ELEMENTS
+    const phoneScreen = document.getElementById("phoneScreen");
+    const sceneBadge = document.getElementById("sceneBadge");
+    const sceneCategory = document.getElementById("sceneCategory");
+    const sceneTimerDisplay = document.getElementById("sceneTimer");
+    const sceneHeading = document.getElementById("sceneHeading");
+    const sceneSubHeading = document.getElementById("sceneSubHeading");
+    const sceneBullets = document.getElementById("sceneBullets");
+    const scriptDisplay = document.getElementById("scriptDisplay");
+    const subtitleDisplay = document.getElementById("subtitleDisplay");
+    const progressBar = document.getElementById("progressBar");
+    const playPauseBtn = document.getElementById("playPauseBtn");
+    const playIcon = document.getElementById("playIcon");
+    const playText = document.getElementById("playText");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    const voiceToggleBtn = document.getElementById("voiceToggleBtn");
+    const voiceIcon = document.getElementById("voiceIcon");
+    const voiceLabel = document.getElementById("voiceLabel");
+    const langSelect = document.getElementById("langSelect");
+    const speakNowBtn = document.getElementById("speakNowBtn");
+    const recordBtn = document.getElementById("recordBtn");
+    const scenePills = document.querySelectorAll(".scene-pill");
+
+    // FORMAT SECONDS TO MM:SS
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60).toString().padStart(2, "0");
+      const s = Math.floor(sec % 60).toString().padStart(2, "0");
+      return `${m}:${s}`;
+    }
+
+    // LOAD SCENE
+    function loadScene(idx, autoVoice = true) {
+      if (idx < 0) idx = 0;
+      if (idx >= scenes.length) {
+        pausePlayback();
+        idx = scenes.length - 1;
+      }
+      currentSceneIdx = idx;
+      const scene = scenes[idx];
+
+      // Update Header & Text
+      sceneBadge.textContent = `Scene ${idx + 1} / ${scenes.length}`;
+      sceneCategory.textContent = scene.category;
+      sceneHeading.textContent = currentLang === "ta" ? scene.tamilTitle : scene.title;
+      sceneSubHeading.textContent = currentLang === "ta" ? scene.title : scene.tamilTitle;
+
+      // Update Bullets
+      sceneBullets.innerHTML = scene.bullets.map(b => `<div class="flex items-center gap-1.5"><span class="text-indigo-400 font-bold">${b.slice(0, 1)}</span><span>${b.slice(2)}</span></div>`).join("");
+
+      // Update Script & Subtitles
+      scriptDisplay.textContent = currentLang === "ta" ? scene.scriptTa : scene.scriptEn;
+      subtitleDisplay.textContent = currentLang === "ta" ? `Translation: "${scene.scriptEn}"` : `தமிழ்: "${scene.scriptTa}"`;
+
+      // Render Phone Mockup
+      phoneScreen.innerHTML = scene.renderPhone();
+
+      // Update Progress Bar
+      const progressPercent = ((idx + 1) / scenes.length) * 100;
+      progressBar.style.width = `${progressPercent}%`;
+
+      // Update Scene Pills
+      scenePills.forEach((p, pIdx) => {
+        if (pIdx === idx) {
+          p.className = "scene-pill px-2.5 py-1 text-xs rounded-lg font-bold bg-indigo-600 text-white shadow";
+        } else {
+          p.className = "scene-pill px-2.5 py-1 text-xs rounded-lg font-medium bg-slate-800 text-slate-400 hover:bg-slate-700";
+        }
+      });
+
+      // Speak narration if enabled
+      if (voiceEnabled && autoVoice) {
+        speakScript();
+      }
+
+      // Calculate elapsed time
+      let prevSeconds = 0;
+      for (let i = 0; i < idx; i++) {
+        prevSeconds += scenes[i].duration;
+      }
+      sceneTimerDisplay.textContent = `${formatTime(prevSeconds)} / ${formatTime(totalDuration)}`;
+
+      // Reset timer
+      clearTimeout(sceneTimer);
+      if (isPlaying) {
+        sceneTimer = setTimeout(() => {
+          if (currentSceneIdx < scenes.length - 1) {
+            loadScene(currentSceneIdx + 1, true);
+          } else {
+            pausePlayback();
+          }
+        }, scene.duration * 1000);
+      }
+    }
+
+    // SPEECH SYNTHESIS ENGINE
+    function speakScript() {
+      if (!('speechSynthesis' in window)) return;
+      speechSynth.cancel();
+
+      const textToSpeak = currentLang === "ta" ? scenes[currentSceneIdx].scriptTa : scenes[currentSceneIdx].scriptEn;
+      speechUtterance = new SpeechSynthesisUtterance(textToSpeak);
+      
+      const voices = speechSynth.getVoices();
+      if (currentLang === "ta") {
+        const tamilVoice = voices.find(v => v.lang.startsWith("ta") || v.name.includes("Tamil") || v.name.includes("Vani"));
+        if (tamilVoice) {
+          speechUtterance.voice = tamilVoice;
+          speechUtterance.lang = "ta-IN";
+        } else {
+          // Indian English voice fallback for Tanglish
+          const inVoice = voices.find(v => v.lang.includes("en-IN") || v.name.includes("Rishi") || v.name.includes("India"));
+          if (inVoice) speechUtterance.voice = inVoice;
+        }
+      } else {
+        const enVoice = voices.find(v => v.lang.includes("en-IN") || v.lang.includes("en-US"));
+        if (enVoice) speechUtterance.voice = enVoice;
+      }
+
+      speechUtterance.rate = 1.0;
+      speechUtterance.pitch = 1.0;
+      speechSynth.speak(speechUtterance);
+    }
+
+    // PLAY / PAUSE LOGIC
+    function pausePlayback() {
+      isPlaying = false;
+      clearTimeout(sceneTimer);
+      if (speechSynth) speechSynth.cancel();
+      playIcon.textContent = "▶";
+      playText.textContent = "Play";
+    }
+
+    function resumePlayback() {
+      isPlaying = true;
+      playIcon.textContent = "⏸";
+      playText.textContent = "Pause";
+      loadScene(currentSceneIdx, true);
+    }
+
+    // EVENT LISTENERS
+    playPauseBtn.addEventListener("click", () => {
+      if (isPlaying) pausePlayback();
+      else resumePlayback();
+    });
+
+    prevBtn.addEventListener("click", () => {
+      if (currentSceneIdx > 0) loadScene(currentSceneIdx - 1, true);
+    });
+
+    nextBtn.addEventListener("click", () => {
+      if (currentSceneIdx < scenes.length - 1) loadScene(currentSceneIdx + 1, true);
+    });
+
+    restartBtn.addEventListener("click", () => {
+      loadScene(0, true);
+    });
+
+    speakNowBtn.addEventListener("click", () => {
+      speakScript();
+    });
+
+    voiceToggleBtn.addEventListener("click", () => {
+      voiceEnabled = !voiceEnabled;
+      if (!voiceEnabled) {
+        if (speechSynth) speechSynth.cancel();
+        voiceIcon.textContent = "🔇";
+        voiceLabel.textContent = "Voice: Muted";
+      } else {
+        voiceIcon.textContent = "🔊";
+        voiceLabel.textContent = `Voice: ${currentLang === 'ta' ? 'Tamil' : 'English'}`;
+        speakScript();
+      }
+    });
+
+    langSelect.addEventListener("change", (e) => {
+      currentLang = e.target.value;
+      voiceLabel.textContent = `Voice: ${currentLang === 'ta' ? 'Tamil' : 'English'}`;
+      loadScene(currentSceneIdx, true);
+    });
+
+    scenePills.forEach(pill => {
+      pill.addEventListener("click", () => {
+        const sceneNum = parseInt(pill.getAttribute("data-scene"));
+        loadScene(sceneNum, true);
+      });
+    });
+
+    // RECORD / EXPORT TO VIDEO (MEDIARECORDER OR SCREEN RECORD CUE)
+    recordBtn.addEventListener("click", () => {
+      alert("💡 Tips for Best Video Export:\n1. Click 'Play' from Scene 1\n2. Open QuickTime Player (Cmd + Shift + 5 on Mac) or your screen recorder\n3. Select the Phone Mockup or full window to capture the complete explanation with sound!\n\nYou can also download the full MP4 / Video Script directly from the project directory.");
+    });
+
+    // INITIALIZATION
+    window.addEventListener("load", () => {
+      // Warm up voices
+      if ('speechSynthesis' in window) {
+        speechSynth.onvoiceschanged = () => {};
+      }
+      loadScene(0, false); // start on scene 0
+    });
+  </script>
+</body>
+</html>

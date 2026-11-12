@@ -38,12 +38,17 @@ import { launchImageLibrary, launchCamera } from 'react-native-image-picker';
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { removeProductBackground, cleanupOldSegmentedImages } from "../utils/backgroundRemover";
 import { useTheme } from "../theme/ThemeContext";
+import AddFoodsScreen from "./restaurant/AddFoodsScreen";
+import { fetchAndCacheShopType, getCachedShopType, isRestaurantShop } from "../utils/restaurantMode";
 import {
   validateHSNCode,
   lookupHSNCode,
   searchHSNByProductDetails,
   suggestHSNCode,
   getHSNDescription,
+  getHSNEntry,
+  deriveCategoryFromHSN,
+  matchProductSearch,
 } from "../services/hsnService";
 
 // PROGRESS STEPPER ITEM COMPONENT
@@ -64,7 +69,7 @@ const StepItem = ({ label, stepNumber, isCompleted, isLast }) => {
       duration: 350,
       useNativeDriver: false,
     }).start();
-  }, [isCompleted]);
+  }, [isCompleted, lineAnim, scaleAnim]);
 
   return (
     <View style={stepperStyles.stepWrapper}>
@@ -236,7 +241,7 @@ export const getMeasurementConfig = (category, unit) => {
   }
 };
 
-export default function ScanScreen({ navigation }) {
+function RetailScanScreen({ navigation, route }) {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
@@ -529,7 +534,8 @@ export default function ScanScreen({ navigation }) {
       const snap = await getDoc(doc(db, "users", u.uid));
       if (snap.exists()) {
         setShopName(snap.data().shopName || "MY SHOP");
-        setUserPlan(snap.data().userPlan || snap.data().subscriptionPlan || "Basic");
+        const isExpired = snap.data().subscriptionExpiry ? Date.now() > Number(snap.data().subscriptionExpiry) : false;
+        setUserPlan(isExpired ? "Expired" : (snap.data().userPlan || snap.data().subscriptionPlan || "Basic"));
       }
       const logo = await AsyncStorage.getItem(`shopLogo_${u.uid}`) || await AsyncStorage.getItem(`shopLogoBase64_${u.uid}`);
       if (logo) { setLogoUrl(logo); }
@@ -714,9 +720,7 @@ export default function ScanScreen({ navigation }) {
   const invoicesCollection = currentMode === "global" ? "global_invoices" : "invoices";
   const inventoryRef = user ? collection(db, "users", user.uid, inventoryCollection) : null;
 
-  const filteredItems = items.filter(i =>
-    (i.itemName || "").toLowerCase().includes(searchText.toLowerCase())
-  );
+  const filteredItems = items.filter(i => matchProductSearch(i, searchText));
 
   const handleDeleteCategory = (catId, catName) => {
     Alert.alert(
@@ -841,11 +845,13 @@ export default function ScanScreen({ navigation }) {
     const code = String(rawCode || "").trim();
     if (!code || code.length < 3) return;
 
-    const maxLimit = userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
+    const maxLimit = userPlan === "Expired" ? 0 : userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
     if (maxLimit !== -1 && items.length >= maxLimit) {
       const existingItem = items.find(i => i.barcode === code);
       if (!existingItem) {
-        setLimitMessage(`Your current ${userPlan} plan allows a maximum of ${maxLimit} items in inventory. Please upgrade to Pro for unlimited storage.`);
+        setLimitMessage(userPlan === "Expired" 
+          ? "Your subscription has expired. Please renew your plan in Subscriptions to add items." 
+          : `Your current ${userPlan} plan allows a maximum of ${maxLimit} items in inventory. Please upgrade to Pro for unlimited storage.`);
         setLimitModalVisible(true);
         return;
       }
@@ -1009,7 +1015,9 @@ export default function ScanScreen({ navigation }) {
   };
 
   const codeScanner = useCodeScanner({
-    codeTypes: ["ean-13", "qr", "ean-8", "upc-a"],
+    codeTypes: Platform.OS === "ios"
+      ? ["ean-13", "qr", "ean-8"]
+      : ["ean-13", "qr", "ean-8", "upc-a"],
     onCodeScanned: async (codes) => {
       const code = codes[0]?.value;
       if (code) {
@@ -1275,6 +1283,23 @@ export default function ScanScreen({ navigation }) {
       setPredictDescription(suggested.description);
     }
     setHsnValidationMessage("");
+    // Automatically associate category and subcategory in background
+    if (suggested.hsnCode) {
+      const derived = deriveCategoryFromHSN(suggested.hsnCode);
+      if (!selectedMainCategory && mainCategories?.length > 0) {
+        const matchedCat = mainCategories.find(c => {
+          const cName = (c.name || c.categoryName || "").toLowerCase().trim();
+          return (
+            cName === (derived.mainCategory || "").toLowerCase().trim() ||
+            cName === (derived.fullCategory || "").toLowerCase().trim() ||
+            cName === (derived.subcategory || "").toLowerCase().trim()
+          );
+        });
+        if (matchedCat) {
+          setSelectedMainCategory(matchedCat.id);
+        }
+      }
+    }
     setHsnSuggestedItem(null);
   };
 
@@ -1328,6 +1353,23 @@ export default function ScanScreen({ navigation }) {
     setPredictDescription(item.description);
     setIsDescriptionManuallyEdited(false);
     setHsnValidationMessage("");
+    // Automatically associate category and subcategory in background
+    if (item.hsnCode) {
+      const derived = deriveCategoryFromHSN(item.hsnCode);
+      if (!selectedMainCategory && mainCategories?.length > 0) {
+        const matchedCat = mainCategories.find(c => {
+          const cName = (c.name || c.categoryName || "").toLowerCase().trim();
+          return (
+            cName === (derived.mainCategory || "").toLowerCase().trim() ||
+            cName === (derived.fullCategory || "").toLowerCase().trim() ||
+            cName === (derived.subcategory || "").toLowerCase().trim()
+          );
+        });
+        if (matchedCat) {
+          setSelectedMainCategory(matchedCat.id);
+        }
+      }
+    }
     setHsnSearchModalVisible(false);
   };
 
@@ -1345,11 +1387,13 @@ export default function ScanScreen({ navigation }) {
       return;
     }
 
-    const maxLimit = userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
+    const maxLimit = userPlan === "Expired" ? 0 : userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
     if (maxLimit !== -1 && items.length >= maxLimit) {
       const existing = items.find(i => i.barcode === predictBarcode);
       if (!existing) {
-        setLimitMessage(`Your current ${userPlan} plan allows a maximum of ${maxLimit} items in inventory. Please upgrade to Pro for unlimited storage.`);
+        setLimitMessage(userPlan === "Expired" 
+          ? "Your subscription has expired. Please renew your plan in Subscriptions to add items." 
+          : `Your current ${userPlan} plan allows a maximum of ${maxLimit} items in inventory. Please upgrade to Pro for unlimited storage.`);
         setLimitModalVisible(true);
         return;
       }
@@ -1367,10 +1411,32 @@ export default function ScanScreen({ navigation }) {
     const pPrice = Number(predictPurchasePrice) || 0;
     const sPrice = Number(predictSalesPrice) || 0;
     const pQty = Number(predictQty) || 1;
+
+    let finalHsnCode = (predictHsnCode || "").trim();
+    if (!finalHsnCode && hsnSuggestedItem?.hsnCode) {
+      finalHsnCode = hsnSuggestedItem.hsnCode;
+    }
+    const derivedHsn = deriveCategoryFromHSN(finalHsnCode);
+
     const selectedMainCategoryData = mainCategories.find(category => category.id === selectedMainCategory);
     const selectedSubcategoryData = sharedSubcategories.find(subcategory => subcategory.id === selectedSubcategory);
-    const savedCategoryName = selectedMainCategoryData?.name || selectedMainCategoryData?.categoryName || "General";
-    const savedSubcategoryName = selectedSubcategoryData?.name || selectedSubcategoryData?.categoryName || "";
+
+    let savedCategoryName = selectedMainCategoryData?.name || selectedMainCategoryData?.categoryName || "";
+    if (!savedCategoryName || savedCategoryName === "General") {
+      if (derivedHsn.fullCategory && derivedHsn.fullCategory !== "General") {
+        savedCategoryName = derivedHsn.fullCategory;
+      } else {
+        savedCategoryName = "General";
+      }
+    }
+
+    let savedSubcategoryName = selectedSubcategoryData?.name || selectedSubcategoryData?.categoryName || "";
+    if (!savedSubcategoryName && derivedHsn.subcategory) {
+      savedSubcategoryName = derivedHsn.subcategory;
+    }
+
+    const finalSubName = predictSubName.trim();
+    const finalDesc = (predictDescription || "").trim() || derivedHsn.description || "";
 
     try {
       const q = query(collection(db, "users", user.uid, inventoryCollection), where("barcode", "==", predictBarcode));
@@ -1392,7 +1458,8 @@ export default function ScanScreen({ navigation }) {
           subcategoryName: savedSubcategoryName,
           itemName: compiledDisplayName,
           brand: predictBrand,
-          subName: predictSubName,
+          subName: finalSubName,
+          variant: finalSubName,
           image: finalImageUrl || existingData.image || "",
           purchasePrice: pPrice > 0 ? pPrice : (Number(existingData.purchasePrice) || 0),
           salesPrice: sPrice > 0 ? sPrice : (Number(existingData.salesPrice) || 0),
@@ -1400,8 +1467,10 @@ export default function ScanScreen({ navigation }) {
           unitType: predictUnitType,
           size: predictSize || existingData.size || "",
           supplierName: supplierName || existingData.supplierName || "Walk-in Supplier",
-          hsnCode: (predictHsnCode || "").trim(),
-          description: (predictDescription || "").trim(),
+          hsnCode: finalHsnCode,
+          description: finalDesc,
+          hsnCategory: derivedHsn.fullCategory || "",
+          hsnKeywords: derivedHsn.keywords || [],
           updatedAt: serverTimestamp()
         });
       } else {
@@ -1409,7 +1478,8 @@ export default function ScanScreen({ navigation }) {
           barcode: predictBarcode,
           itemName: compiledDisplayName,
           brand: predictBrand,
-          subName: predictSubName,
+          subName: finalSubName,
+          variant: finalSubName,
           image: finalImageUrl || "",
           purchasePrice: pPrice,
           salesPrice: sPrice,
@@ -1422,8 +1492,10 @@ export default function ScanScreen({ navigation }) {
           subcategoryId: selectedSubcategory || "",
           subcategoryName: savedSubcategoryName,
           supplierName: supplierName || "Walk-in Supplier",
-          hsnCode: (predictHsnCode || "").trim(),
-          description: (predictDescription || "").trim(),
+          hsnCode: finalHsnCode,
+          description: finalDesc,
+          hsnCategory: derivedHsn.fullCategory || "",
+          hsnKeywords: derivedHsn.keywords || [],
           isOnlineSaleEnabled: true,
           createdAt: serverTimestamp()
         });
@@ -1435,7 +1507,8 @@ export default function ScanScreen({ navigation }) {
         barcode: predictBarcode,
         name: compiledDisplayName,
         brand: predictBrand,
-        subName: predictSubName,
+        subName: finalSubName,
+        variant: finalSubName,
         image: finalImageUrl,
         purchasePrice: pPrice,
         salesPrice: sPrice,
@@ -1447,8 +1520,10 @@ export default function ScanScreen({ navigation }) {
         subcategoryName: savedSubcategoryName,
         unitType: predictUnitType,
         size: predictSize,
-        hsnCode: (predictHsnCode || "").trim(),
-        description: (predictDescription || "").trim(),
+        hsnCode: finalHsnCode,
+        description: finalDesc,
+        hsnCategory: derivedHsn.fullCategory || "",
+        hsnKeywords: derivedHsn.keywords || [],
       };
 
       setScannedList(prev => {
@@ -1470,11 +1545,13 @@ export default function ScanScreen({ navigation }) {
   const handleAddOrUpdateProduct = async () => {
     if (!tempProduct) return;
      
-    const maxLimit = userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
+    const maxLimit = userPlan === "Expired" ? 0 : userPlan === "Pro" ? -1 : userPlan === "Premium" ? 200 : 10;
     if (maxLimit !== -1 && items.length >= maxLimit) {
       const existing = items.find(i => i.barcode === tempProduct.barcode);
       if (!existing) {
-        setLimitMessage(`Your current ${userPlan} plan allows a maximum of ${maxLimit} items in inventory.`);
+        setLimitMessage(userPlan === "Expired" 
+          ? "Your subscription has expired. Please renew your plan in Subscriptions to add items." 
+          : `Your current ${userPlan} plan allows a maximum of ${maxLimit} items in inventory.`);
         setLimitModalVisible(true);
         return;
       }
@@ -1546,6 +1623,12 @@ export default function ScanScreen({ navigation }) {
           categoryName: item.categoryName || item.category || "General",
           subcategoryId: item.subcategoryId || "",
           subcategoryName: item.subcategoryName || "",
+          subName: item.subName || item.variant || "",
+          variant: item.variant || item.subName || "",
+          hsnCode: item.hsnCode || "",
+          description: item.description || "",
+          hsnCategory: item.hsnCategory || "",
+          hsnKeywords: item.hsnKeywords || [],
           unitType: item.unitType || "Qty",
           size: item.size || "",
           supplierName: supplierName || "Walk-in Supplier"
@@ -1574,12 +1657,22 @@ export default function ScanScreen({ navigation }) {
             if (it.subcategoryName) updatePayload.subcategoryName = it.subcategoryName;
             if (it.unitType) updatePayload.unitType = it.unitType;
             if (it.size) updatePayload.size = it.size;
+            if (it.hsnCode) updatePayload.hsnCode = it.hsnCode;
+            if (it.description) updatePayload.description = it.description;
+            if (it.subName || it.variant) {
+              updatePayload.subName = it.subName || it.variant;
+              updatePayload.variant = it.variant || it.subName;
+            }
+            if (it.hsnCategory) updatePayload.hsnCategory = it.hsnCategory;
+            if (it.hsnKeywords) updatePayload.hsnKeywords = it.hsnKeywords;
             await updateDoc(doc(db, "users", user.uid, inventoryCollection, d.id), updatePayload);
           } else {
             await addDoc(collection(db, "users", user.uid, inventoryCollection), {
               barcode: it.barcode,
               itemName: it.name,
               brand: it.brand || "",
+              subName: it.subName || it.variant || "",
+              variant: it.variant || it.subName || "",
               image: it.image || "",
               purchasePrice: Number(it.purchasePrice || 0),
               salesPrice: Number(it.salesPrice || 0),
@@ -1591,6 +1684,10 @@ export default function ScanScreen({ navigation }) {
               categoryName: it.categoryName || it.category || "General",
               subcategoryId: it.subcategoryId || "",
               subcategoryName: it.subcategoryName || "",
+              hsnCode: (it.hsnCode || "").trim(),
+              description: (it.description || "").trim(),
+              hsnCategory: it.hsnCategory || "",
+              hsnKeywords: it.hsnKeywords || [],
               supplierName: supplierName || "Walk-in Supplier",
               isOnlineSaleEnabled: true,
               createdAt: serverTimestamp()
@@ -1610,7 +1707,11 @@ export default function ScanScreen({ navigation }) {
             salesPrice: Number(i.salesPrice || 0), 
             qty: Number(i.qty || 1), 
             unitType: i.unitType || "Qty",
-            size: i.size || ""
+            size: i.size || "",
+            subName: i.subName || i.variant || "",
+            variant: i.variant || i.subName || "",
+            hsnCode: i.hsnCode || "",
+            category: i.categoryName || i.category || ""
           })),
           total: Number(purchaseTotal),
           createdAt: serverTimestamp()
@@ -1626,6 +1727,44 @@ export default function ScanScreen({ navigation }) {
       setSuccessVisible(false); 
       focusGunScanner();
     }, 1800);
+  };
+
+  const addInventoryItemToScannedList = (item) => {
+    setScannedList(prev => {
+      const exist = prev.find(i => (i.barcode && i.barcode === item.barcode) || (i.id && i.id === item.id));
+      if (exist) {
+        return prev.map(i => ((i.barcode && i.barcode === item.barcode) || (i.id && i.id === item.id)) ? { ...i, qty: (i.qty || 1) + 1 } : i);
+      }
+      const finalVariant = item.subName || item.variant || "";
+      const derived = item.hsnCode ? deriveCategoryFromHSN(item.hsnCode) : null;
+      const finalCat = item.categoryName || item.category || derived?.fullCategory || "General";
+      const finalSubcat = item.subcategoryName || derived?.subcategory || "";
+
+      const newItem = {
+        id: item.id,
+        barcode: item.barcode || "ITEM-" + Date.now().toString().slice(-6),
+        name: item.itemName || item.name || "",
+        brand: item.brand || "",
+        subName: finalVariant,
+        variant: finalVariant,
+        image: item.image || "",
+        purchasePrice: Number(item.purchasePrice || 0),
+        salesPrice: Number(item.salesPrice || 0),
+        qty: 1,
+        category: finalCat,
+        categoryId: item.categoryId || "",
+        categoryName: finalCat,
+        subcategoryId: item.subcategoryId || "",
+        subcategoryName: finalSubcat,
+        unitType: item.unitType || "Qty",
+        size: item.size || "",
+        hsnCode: item.hsnCode || "",
+        description: item.description || derived?.description || "",
+        hsnCategory: item.hsnCategory || derived?.fullCategory || "",
+        hsnKeywords: item.hsnKeywords || derived?.keywords || [],
+      };
+      return [...prev, newItem];
+    });
   };
 
   const filteredCategoryProducts = items.filter(item => {
@@ -1675,9 +1814,25 @@ export default function ScanScreen({ navigation }) {
 
       {/* HEADER */}
       <View style={[styles.topWhiteHeader, { backgroundColor: theme.card, borderBottomColor: darkMode ? "#334155" : "#e2e8f0" }]}>
-        <View style={[styles.shopBadge, { backgroundColor: darkMode ? "#1e293b" : "#eef2ff" }]}>
-          <Icon name="cube-box" size={22} color="#6366f1" />
-          <Text style={[styles.shopNameText, { color: darkMode ? "#f8fafc" : "#6366f1" }]}>{shopName}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", flex: 1, marginRight: 8 }}>
+          <TouchableOpacity 
+            focusable={false}
+            onPress={() => {
+              if (navigation?.canGoBack?.()) {
+                navigation.goBack();
+              } else {
+                navigation.navigate("Dashboard");
+              }
+            }}
+            style={[styles.headerBackBtn, { backgroundColor: darkMode ? '#1e293b' : '#f1f5f9' }]}
+            activeOpacity={0.7}
+          >
+            <Icon name="arrow-left" size={22} color={theme.text} />
+          </TouchableOpacity>
+          <View style={[styles.shopBadge, { backgroundColor: darkMode ? "#1e293b" : "#eef2ff" }]}>
+            <Icon name="cube-box" size={22} color="#6366f1" />
+            <Text style={[styles.shopNameText, { color: darkMode ? "#f8fafc" : "#6366f1" }]}>{shopName}</Text>
+          </View>
         </View>
         <Text style={{ fontSize: 11, color: theme.subText, fontWeight: "600" }}>Plan: {userPlan}</Text>
       </View>
@@ -1689,13 +1844,14 @@ export default function ScanScreen({ navigation }) {
         <View style={[styles.leftSection, isLandscape && styles.landscapeLeftSection]}>
           <View style={[styles.cameraOuterWrapper, isLandscape && styles.landscapeCameraOuterWrapper, { backgroundColor: theme.background }]}>
             <View style={styles.cameraFrameContainer}>
-              {device && isCameraActive ? (
+              {device && isCameraActive && hasPermission ? (
                 <Camera
                   style={StyleSheet.absoluteFill}
                   device={device}
                   isActive={isCameraActive}
                   codeScanner={codeScanner}
-                  torch={torch}
+                  torch={device?.hasTorch ? torch : "off"}
+                  onError={(error) => console.log("Camera runtime error:", error)}
                 /> 
               ) : (
                 <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' }]}>
@@ -1824,12 +1980,92 @@ export default function ScanScreen({ navigation }) {
           <Text style={[styles.title, { color: theme.text }]}>Scanned Items</Text>
           <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
             {searchText.trim().length > 0 ? (
-              filteredItems.map((item) => (
-                <View key={item.id} style={[styles.itemCard, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
-                  <Text style={{ color: theme.text, flex: 1, fontWeight: '700' }}>{item.itemName} {item.size ? `[${item.size}]` : ''}</Text>
-                  <Text style={{ color: "#22c55e", marginRight: 10, fontWeight: '600' }}>₹{item.salesPrice || 0}</Text>
+              filteredItems.length === 0 ? (
+                <View style={{ padding: 24, alignItems: "center", justifyContent: "center" }}>
+                  <Icon name="package-variant-closed-remove" size={40} color={darkMode ? "#64748b" : "#94a3b8"} />
+                  <Text style={{ marginTop: 8, color: darkMode ? "#94a3b8" : "#64748b", fontWeight: "600", fontSize: 13, textAlign: "center" }}>
+                    No products found for "{searchText}"
+                  </Text>
+                  <Text style={{ marginTop: 4, color: darkMode ? "#64748b" : "#94a3b8", fontSize: 11, textAlign: "center" }}>
+                    Search by Category (e.g. Underwear), Variant, HSN Code, or Name.
+                  </Text>
                 </View>
-              ))
+              ) : (
+                filteredItems.map((item) => {
+                  const itemInScanned = scannedList.find(s => (s.barcode && s.barcode === item.barcode) || (s.id && s.id === item.id));
+                  const displayCat = item.categoryName || item.category;
+                  const displayVariant = item.subName || item.variant;
+                  return (
+                    <View key={item.id || item.barcode} style={[styles.itemCard, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0", flexDirection: "column", alignItems: "stretch", padding: 12 }]}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        {item.image ? (
+                          <Image source={{ uri: item.image }} style={{ width: 42, height: 42, borderRadius: 8, marginRight: 10, backgroundColor: "#fff" }} resizeMode="contain" />
+                        ) : (
+                          <View style={{ width: 42, height: 42, borderRadius: 8, backgroundColor: darkMode ? "#334155" : "#e2e8f0", justifyContent: "center", alignItems: "center", marginRight: 10 }}>
+                            <Icon name="tag-outline" size={20} color="#6366f1" />
+                          </View>
+                        )}
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text numberOfLines={1} style={{ color: theme.text, fontWeight: "700", fontSize: 13 }}>
+                            {item.itemName || item.name} {item.size ? `• ${item.size}` : ""}
+                          </Text>
+                          <Text style={{ color: darkMode ? "#94a3b8" : "#64748b", fontSize: 11, marginTop: 1 }}>
+                            Stock: {item.quantity || 0} | Pur: ₹{item.purchasePrice || 0} | Sale: ₹{item.salesPrice || 0}
+                          </Text>
+                        </View>
+
+                        {itemInScanned ? (
+                          <View style={{ flexDirection: "row", alignItems: "center" }}>
+                            <TouchableOpacity
+                              focusable={false}
+                              onPress={() => setScannedList(prev => prev.map(i => ((i.barcode && i.barcode === item.barcode) || (i.id && i.id === item.id)) ? { ...i, qty: Math.max(1, (i.qty || 1) - 1) } : i))}
+                              style={styles.qtyBtn}
+                            >
+                              <Text style={{ color: '#fff', fontWeight: 'bold' }}>-</Text>
+                            </TouchableOpacity>
+                            <Text style={{ color: theme.text, marginHorizontal: 6, fontWeight: 'bold' }}>{itemInScanned.qty || 1}</Text>
+                            <TouchableOpacity
+                              focusable={false}
+                              onPress={() => setScannedList(prev => prev.map(i => ((i.barcode && i.barcode === item.barcode) || (i.id && i.id === item.id)) ? { ...i, qty: (i.qty || 1) + 1 } : i))}
+                              style={styles.qtyBtn}
+                            >
+                              <Text style={{ color: '#fff', fontWeight: 'bold' }}>+</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : (
+                          <TouchableOpacity
+                            focusable={false}
+                            onPress={() => addInventoryItemToScannedList(item)}
+                            style={{ backgroundColor: "#16a34a", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, flexDirection: "row", alignItems: "center" }}
+                          >
+                            <Icon name="plus" size={14} color="#fff" style={{ marginRight: 2 }} />
+                            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>Add</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      {/* Badges: Category, Variant, HSN */}
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 6 }}>
+                        {displayCat && displayCat !== "General" ? (
+                          <View style={{ backgroundColor: darkMode ? "#312e81" : "#e0e7ff", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                            <Text style={{ fontSize: 10, fontWeight: "700", color: darkMode ? "#a5b4fc" : "#4338ca" }}>🏷️ {displayCat}</Text>
+                          </View>
+                        ) : null}
+                        {displayVariant ? (
+                          <View style={{ backgroundColor: darkMode ? "#78350f" : "#fef3c7", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                            <Text style={{ fontSize: 10, fontWeight: "700", color: darkMode ? "#fcd34d" : "#b45309" }}>✨ {displayVariant}</Text>
+                          </View>
+                        ) : null}
+                        {item.hsnCode ? (
+                          <View style={{ backgroundColor: darkMode ? "#064e3b" : "#dcfce7", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                            <Text style={{ fontSize: 10, fontWeight: "700", color: darkMode ? "#6ee7b7" : "#15803d" }}>HSN: {item.hsnCode}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })
+              )
             ) : (
               scannedList.map((item) => {
                 const isNameDone = Boolean(item.name && item.name.trim().length > 0);
@@ -3233,6 +3469,7 @@ const styles = StyleSheet.create({
     margin: 0,
   },
   topWhiteHeader: { height: 60, width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: 1, elevation: 2, marginTop: Platform.OS === "android" ? StatusBar.currentHeight || 24 : 0 },
+  headerBackBtn: { padding: 8, marginRight: 8, borderRadius: 20 },
   shopBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   shopNameText: { fontSize: 16, fontWeight: '800', marginLeft: 6 },
   headerIconBtn: { padding: 8, marginLeft: 6, borderRadius: 20 },
@@ -3291,3 +3528,45 @@ actionCircleBtn: {
   recBtn: { flex: 1, padding: 14, borderRadius: 12, alignItems: "center", marginHorizontal: 6 },
   recBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 }
 });
+
+export default function ScanScreen(props) {
+  const routeRest = Boolean(props.route?.params?.isRestaurant || props.route?.params?.itemToEdit);
+  const [isRestaurant, setIsRestaurant] = useState(routeRest);
+  const [loading, setLoading] = useState(!routeRest);
+
+  useEffect(() => {
+    let active = true;
+    const checkMode = async () => {
+      const user = auth.currentUser;
+      if (!user) {
+        if (active) setLoading(false);
+        return;
+      }
+      const cached = await getCachedShopType(user.uid);
+      if (cached && active) {
+        setIsRestaurant(isRestaurantShop(cached));
+        setLoading(false);
+      }
+      const { isRestaurant: isRest } = await fetchAndCacheShopType(user.uid);
+      if (active) {
+        setIsRestaurant(isRest);
+        setLoading(false);
+      }
+    };
+    checkMode();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (loading) {
+    return <View style={{ flex: 1, backgroundColor: "#f8fafc" }} />;
+  }
+
+  const isPurchaseMode = props.route?.params?.isPurchase || props.route?.params?.mode === "purchase";
+  if (isRestaurant && !isPurchaseMode) {
+    return <AddFoodsScreen {...props} />;
+  }
+
+  return <RetailScanScreen {...props} />;
+}

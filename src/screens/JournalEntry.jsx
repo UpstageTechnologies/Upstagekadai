@@ -104,7 +104,8 @@ export default function JournalEntry({ navigation }) {
       const snap = await getDoc(doc(db, "users", user.uid));
       if (snap.exists()) {
         setShopName(snap.data().shopName || "MY SHOP");
-        setUserPlan(snap.data().userPlan || snap.data().subscriptionPlan || "Basic");
+        const isExpired = snap.data().subscriptionExpiry ? Date.now() > Number(snap.data().subscriptionExpiry) : false;
+        setUserPlan(isExpired ? "Expired" : (snap.data().userPlan || snap.data().subscriptionPlan || "Basic"));
       }
 
       const logo = await AsyncStorage.getItem(`shopLogo_${user.uid}`);

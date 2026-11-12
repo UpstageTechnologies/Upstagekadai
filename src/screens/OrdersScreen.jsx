@@ -16,7 +16,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { collection, onSnapshot, doc, updateDoc, getDoc, query, where, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, onSnapshot, doc, updateDoc, getDoc, query, where, getDocs, addDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../utils/firebaseConfig";
 import { getSession } from "../utils/session";
 import { useRoute, useNavigation } from "@react-navigation/native";
@@ -47,6 +47,23 @@ export default function OrdersScreen() {
   // Filter & Search states
   const [activeTab, setActiveTab] = useState("All");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Door Delivery & Shop Configuration States
+  const [doorDeliveryEnabled, setDoorDeliveryEnabled] = useState(true);
+  const [shopProfile, setShopProfile] = useState({ name: "My Shop", address: "", phone: "" });
+  const [deliveryStaffList, setDeliveryStaffList] = useState([]);
+
+  // Assign Delivery Modal States
+  const [assignDeliveryModal, setAssignDeliveryModal] = useState(false);
+  const [orderToDeliver, setOrderToDeliver] = useState(null);
+  const [selectedDeliveryStaff, setSelectedDeliveryStaff] = useState(null);
+  const [customDeliveryBoyName, setCustomDeliveryBoyName] = useState("");
+  const [customDeliveryBoyPhone, setCustomDeliveryBoyPhone] = useState("");
+  const [assigningLoading, setAssigningLoading] = useState(false);
+
+  // Store Pickup / Packed Notification Modal States
+  const [pickupModalVisible, setPickupModalVisible] = useState(false);
+  const [orderToPickup, setOrderToPickup] = useState(null);
 
   const handleBackPress = () => {
     if (navigation.canGoBack()) {
@@ -88,6 +105,28 @@ useEffect(() => {
         const subCollectionName = activeMode === "global" ? "global_orders" : "local_orders";
 
         console.log(`📡 Fetching from: users/${session.uid}/${subCollectionName}`);
+
+        // Listen to Shop Profile & Delivery Configuration
+        const unsubShop = onSnapshot(doc(db, "users", session.uid), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            const dEnabled = data.doorDeliveryEnabled ?? data.deliveryConfig?.doorDeliveryEnabled ?? true;
+            setDoorDeliveryEnabled(dEnabled);
+            setShopProfile({
+              name: data.shopName || data.storeName || "My Store",
+              address: typeof data.address === "string" ? data.address : (data.address?.fullAddress || ""),
+              phone: data.phone || data.mobile || "",
+            });
+          }
+        });
+
+        // Listen to Delivery Boys for this shop
+        const unsubStaff = onSnapshot(collection(db, "users", session.uid, "staffs"), (snap) => {
+          const dBoys = snap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((s) => s.role === "delivery");
+          setDeliveryStaffList(dBoys);
+        });
 
         // Antha specific collection-ah mattum real-time-la listen panrathu
         unsubscribe = onSnapshot(
@@ -356,7 +395,193 @@ useEffect(() => {
     }
   };
 
-  const nextStatus = (current, lastStatus) => {
+  // Toggle Door Delivery ON / OFF for this shop
+  const toggleDoorDelivery = async () => {
+    const nextVal = !doorDeliveryEnabled;
+    setDoorDeliveryEnabled(nextVal);
+    try {
+      await updateDoc(doc(db, "users", uid), {
+        doorDeliveryEnabled: nextVal,
+        "deliveryConfig.doorDeliveryEnabled": nextVal,
+      });
+      Alert.alert(
+        nextVal ? "Door Delivery Active 🛵" : "Store Pickup Only 🏬",
+        nextVal
+          ? "Door Delivery is now ON. You can assign delivery boys using the Delivery App."
+          : "Delivery is now OFF. Customers will pick up their packed orders in your shop."
+      );
+    } catch (e) {
+      console.log("Error toggling delivery:", e);
+    }
+  };
+
+  // Assign Order to Delivery Boy & Send task to Delivery App
+  const handleAssignDelivery = async () => {
+    if (!orderToDeliver || !uid) return;
+    const staffName = selectedDeliveryStaff?.name || customDeliveryBoyName.trim();
+    const staffPhone = selectedDeliveryStaff?.mobile || customDeliveryBoyPhone.trim();
+    const staffId = selectedDeliveryStaff?.staffId || selectedDeliveryStaff?.id || `DEL-${Date.now().toString().slice(-4)}`;
+
+    if (!staffName) {
+      Alert.alert("Missing Delivery Boy", "Please select or enter the Delivery Boy's name.");
+      return;
+    }
+
+    setAssigningLoading(true);
+    try {
+      let displayItems = asArray(orderToDeliver.items);
+      if (!displayItems.length && Array.isArray(orderToDeliver.orderedShops)) {
+        const myShop = orderToDeliver.orderedShops.find((s) => s?.shopId === uid);
+        if (myShop) displayItems = myShop.items || [];
+      }
+
+      const orderTotal = Number(
+        orderToDeliver.totalAmount ??
+        orderToDeliver.total ??
+        displayItems.reduce((sum, p) => sum + (Number(p?.price) || 0) * (Number(p?.qty) || 1), 0)
+      ) || 0;
+
+      const deliveryTask = {
+        id: String(orderToDeliver.id),
+        orderId: String(orderToDeliver.orderId || orderToDeliver.id),
+        orderDocId: String(orderToDeliver.id),
+        shopId: uid,
+        shopName: shopProfile.name,
+        shopAddress: shopProfile.address,
+        shopPhone: shopProfile.phone,
+        customerName: asText(orderToDeliver.customerName || "Customer"),
+        customerPhone: asText(orderToDeliver.customerPhone || ""),
+        deliveryAddress: asText(orderToDeliver.deliveryAddress || "Address not provided"),
+        items: displayItems,
+        totalAmount: orderTotal,
+        paymentMode: orderToDeliver.paymentMode || "COD",
+        assignedStaffId: staffId,
+        assignedStaffName: staffName,
+        assignedStaffPhone: staffPhone,
+        status: "assigned", // assigned -> out_for_delivery -> delivered
+        assignedAt: serverTimestamp(),
+        createdAt: orderToDeliver.createdAt || serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      // 1. Write task into global `delivery_orders` (listened to by Delivery App)
+      await setDoc(doc(db, "delivery_orders", String(orderToDeliver.id)), deliveryTask, { merge: true });
+      // 2. Also keep a copy under shop's delivery_orders
+      await setDoc(doc(db, "users", uid, "delivery_orders", String(orderToDeliver.id)), deliveryTask, { merge: true });
+
+      // 3. Update order in POS shop collection
+      const subCol = getSubCol(currentAppMode);
+      const posUpdate = {
+        status: "Out For Delivery",
+        deliveryStatus: "assigned",
+        assignedDeliveryBoyId: staffId,
+        assignedDeliveryBoyName: staffName,
+        assignedDeliveryBoyPhone: staffPhone,
+      };
+      try {
+        await updateDoc(doc(db, "users", uid, subCol, orderToDeliver.id), posUpdate);
+      } catch {
+        await updateDoc(doc(db, "users", uid, "orders", orderToDeliver.id), posUpdate);
+      }
+
+      // 4. Update customer's order
+      if (orderToDeliver.customerUid) {
+        try {
+          const custRef = doc(db, "customers", orderToDeliver.customerUid, "orders", orderToDeliver.id);
+          await updateDoc(custRef, {
+            status: "Out For Delivery",
+            deliveryBoyName: staffName,
+            deliveryBoyPhone: staffPhone,
+          });
+        } catch (e) {
+          console.log("Error updating customer order:", e);
+        }
+      }
+
+      setAssignDeliveryModal(false);
+      Alert.alert(
+        "Order Dispatched 🛵",
+        `Order #${orderToDeliver.orderId || orderToDeliver.id} assigned to ${staffName}. Details sent to Delivery App!`
+      );
+    } catch (e) {
+      console.log("Error assigning delivery:", e);
+      Alert.alert("Error", "Failed to assign delivery: " + e.message);
+    } finally {
+      setAssigningLoading(false);
+    }
+  };
+
+  // Mark Packed & Notify Customer when Delivery is OFF (or for Store Pickup)
+  const handleMarkPackedAndNotify = async (order) => {
+    try {
+      const subCol = getSubCol(currentAppMode);
+      const packedUpdate = {
+        status: "Packed",
+        pickupReady: true,
+        packedAt: serverTimestamp(),
+      };
+
+      try {
+        await updateDoc(doc(db, "users", uid, subCol, order.id), packedUpdate);
+      } catch {
+        await updateDoc(doc(db, "users", uid, "orders", order.id), packedUpdate);
+      }
+
+      // Update customer order document
+      if (order.customerUid) {
+        try {
+          const custRef = doc(db, "customers", order.customerUid, "orders", order.id);
+          await updateDoc(custRef, {
+            status: "Packed",
+            pickupStatus: "ready_for_pickup",
+            pickupMessage: `Your order is packed! Please get your product in shop: ${shopProfile.name}`,
+          });
+
+          // Add notification for customer
+          await addDoc(collection(db, "customers", order.customerUid, "notifications"), {
+            title: "🛍️ Your order is packed!",
+            message: `Your order is packed! Get your product in shop: ${shopProfile.name} (${shopProfile.address || ""})`,
+            orderId: order.id,
+            type: "order_packed",
+            createdAt: serverTimestamp(),
+          });
+        } catch (e) {
+          console.log("Customer notification error:", e);
+        }
+      }
+
+      setOrderToPickup(order);
+      setPickupModalVisible(true);
+    } catch (e) {
+      console.log("Mark packed error:", e);
+      Alert.alert("Error", "Failed to update order status");
+    }
+  };
+
+  const sendPickupWhatsAppMessage = (order) => {
+    if (!order?.customerPhone) {
+      Alert.alert("No Phone Number", "Customer phone number is not available.");
+      return;
+    }
+    const cleanPhone = order.customerPhone.replace(/\D/g, "");
+    const msg = `Hello ${order.customerName || "Customer"}! 👋\n\nYour order #${order.orderId || order.id} from *${shopProfile.name}* is packed and ready! 🛍️\n\n📍 *Get your product in our shop:*\n${shopProfile.address || shopProfile.name}\n${shopProfile.phone ? "📞 Phone: " + shopProfile.phone : ""}\n\nThank you for shopping with us! 😊`;
+    const url = `whatsapp://send?phone=${cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone}&text=${encodeURIComponent(msg)}`;
+    Linking.openURL(url).catch(() => {
+      Linking.openURL(`https://wa.me/${cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone}?text=${encodeURIComponent(msg)}`);
+    });
+  };
+
+  const sendDeliveryWhatsAppMessage = (order, staffPhone, staffName) => {
+    if (!staffPhone) return;
+    const cleanPhone = staffPhone.replace(/\D/g, "");
+    const msg = `🛵 *NEW DELIVERY ASSIGNED* 🛵\n\n*Order ID:* #${order.orderId || order.id}\n*Customer:* ${order.customerName || "Customer"}\n*Phone:* ${order.customerPhone}\n*Delivery Address:* ${order.deliveryAddress}\n*Amount to Collect:* ₹${order.totalAmount || order.total || 0} (${order.paymentMode || 'COD'})\n\n📍 *Google Maps Navigation:*\nhttps://maps.google.com/?q=${encodeURIComponent(order.deliveryAddress)}\n\n*Pickup from:* ${shopProfile.name}, ${shopProfile.address}`;
+    const url = `whatsapp://send?phone=${cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone}&text=${encodeURIComponent(msg)}`;
+    Linking.openURL(url).catch(() => {
+      Linking.openURL(`https://wa.me/${cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone}?text=${encodeURIComponent(msg)}`);
+    });
+  };
+
+    const nextStatus = (current, lastStatus) => {
     const status = current === "Pending" ? lastStatus : current;
     switch (status) {
       case "Pending Verification": return "Accepted";
@@ -566,8 +791,35 @@ useEffect(() => {
           </View>
         )}
 
+        {/* Assigned Delivery Boy Badge (if assigned) */}
+        {item.assignedDeliveryBoyName && (
+          <View style={[styles.assignedDeliveryBadge, { backgroundColor: darkMode ? "#064e3b" : "#ecfdf5", borderColor: "#10b981" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", flex: 1 }}>
+              <Icon name="moped" size={18} color="#16a34a" style={{ marginRight: 6 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontWeight: "800", color: "#16a34a" }}>
+                  Delivery Boy: {item.assignedDeliveryBoyName}
+                </Text>
+                {item.assignedDeliveryBoyPhone ? (
+                  <Text style={{ fontSize: 11, color: "#64748b" }}>
+                    Ph: {item.assignedDeliveryBoyPhone}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+            {item.assignedDeliveryBoyPhone ? (
+              <TouchableOpacity
+                onPress={() => Linking.openURL(`tel:${item.assignedDeliveryBoyPhone}`)}
+                style={{ backgroundColor: "#16a34a", padding: 6, borderRadius: 8, marginLeft: 6 }}
+              >
+                <Icon name="phone" size={14} color="#fff" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        )}
+
         {/* Action Buttons */}
-        <View style={{ flexDirection: "row", gap: 8, marginTop: 15 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 15 }}>
           {isPending ? (
             <TouchableOpacity 
               style={[styles.mainActionBtn, { backgroundColor: "#10b981" }]} 
@@ -576,14 +828,64 @@ useEffect(() => {
               <Text style={styles.btnText}>▶ Resume Order</Text>
             </TouchableOpacity>
           ) : (
-            next && (
-              <TouchableOpacity 
-                style={[styles.mainActionBtn, { backgroundColor: "#6366f1" }]} 
-                onPress={() => updateStatus(item.id, next, item.customerUid)}
-              >
-                <Text style={styles.btnText}>Mark as {next}</Text>
-              </TouchableOpacity>
-            )
+            <>
+              {/* DOOR DELIVERY ON: Assign to Delivery Boy button */}
+              {doorDeliveryEnabled && ["Accepted", "Packed"].includes(item.status) && (
+                <TouchableOpacity
+                  style={[styles.mainActionBtn, { backgroundColor: "#16a34a" }]}
+                  onPress={() => {
+                    setOrderToDeliver(item);
+                    setSelectedDeliveryStaff(deliveryStaffList[0] || null);
+                    setCustomDeliveryBoyName("");
+                    setCustomDeliveryBoyPhone("");
+                    setAssignDeliveryModal(true);
+                  }}
+                >
+                  <Icon name="moped" size={16} color="#fff" style={{ marginRight: 4 }} />
+                  <Text style={styles.btnText}>Assign Delivery Boy</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* DOOR DELIVERY OFF (or In-Store Pickup): Mark Packed & Notify Customer */}
+              {!doorDeliveryEnabled && item.status === "Accepted" && (
+                <TouchableOpacity
+                  style={[styles.mainActionBtn, { backgroundColor: "#7c3aed" }]}
+                  onPress={() => handleMarkPackedAndNotify(item)}
+                >
+                  <Icon name="package-variant-closed" size={16} color="#fff" style={{ marginRight: 4 }} />
+                  <Text style={styles.btnText}>Pack & Notify Customer</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* DOOR DELIVERY OFF & ALREADY PACKED: Send message or mark collected */}
+              {!doorDeliveryEnabled && item.status === "Packed" && (
+                <>
+                  <TouchableOpacity
+                    style={[styles.mainActionBtn, { backgroundColor: "#25d366" }]}
+                    onPress={() => sendPickupWhatsAppMessage(item)}
+                  >
+                    <Icon name="whatsapp" size={16} color="#fff" style={{ marginRight: 4 }} />
+                    <Text style={styles.btnText}>Notify Pickup (WhatsApp)</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.secondaryActionBtn, { backgroundColor: "#10b981" }]}
+                    onPress={() => updateStatus(item.id, "Delivered", item.customerUid)}
+                  >
+                    <Text style={styles.btnText}>✓ Collected in Shop</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {/* Standard Next Status Button */}
+              {next && !(doorDeliveryEnabled && ["Accepted", "Packed"].includes(item.status)) && !(!doorDeliveryEnabled && ["Accepted", "Packed"].includes(item.status)) && (
+                <TouchableOpacity 
+                  style={[styles.mainActionBtn, { backgroundColor: "#6366f1" }]} 
+                  onPress={() => updateStatus(item.id, next, item.customerUid)}
+                >
+                  <Text style={styles.btnText}>Mark as {next}</Text>
+                </TouchableOpacity>
+              )}
+            </>
           )}
 
           {!["Delivered", "Rejected"].includes(item.status) && (
@@ -632,6 +934,30 @@ useEffect(() => {
         <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
           Customer Orders ({currentAppMode === "global" ? "Global" : "Local"})
         </Text>
+      </View>
+
+      {/* DOOR DELIVERY MODE TOGGLE BANNER */}
+      <View style={[styles.deliveryBanner, { backgroundColor: doorDeliveryEnabled ? "#ecfdf5" : "#fffbeb", borderColor: doorDeliveryEnabled ? "#a7f3d0" : "#fef3c7" }]}>
+        <View style={{ flexDirection: "row", alignItems: "center", flex: 1, marginRight: 8 }}>
+          <Icon name={doorDeliveryEnabled ? "moped" : "store-clock"} size={22} color={doorDeliveryEnabled ? "#16a34a" : "#d97706"} style={{ marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: "800", color: doorDeliveryEnabled ? "#15803d" : "#b45309" }}>
+              {doorDeliveryEnabled ? "🛵 Door Delivery: ON" : "🏬 Store Pickup Only: Active"}
+            </Text>
+            <Text style={{ fontSize: 11, color: doorDeliveryEnabled ? "#166534" : "#92400e" }}>
+              {doorDeliveryEnabled 
+                ? "Assign orders to delivery boys using the Delivery App" 
+                : "Door delivery OFF. Customers pick up packed orders in-shop"}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity 
+          style={[styles.deliveryToggleBtn, { backgroundColor: doorDeliveryEnabled ? "#16a34a" : "#d97706" }]} 
+          onPress={toggleDoorDelivery}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.deliveryToggleBtnText}>{doorDeliveryEnabled ? "Turn OFF" : "Turn ON"}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Search Bar */}
@@ -728,6 +1054,192 @@ useEffect(() => {
                 <Text style={styles.btnText}>Apply Hold</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 🛵 ASSIGN TO DELIVERY BOY MODAL */}
+      <Modal visible={assignDeliveryModal} transparent animationType="slide">
+        <View style={styles.modalBg}>
+          <View style={[styles.newModalBox, { backgroundColor: theme.card, maxHeight: "90%" }]}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Icon name="moped" size={24} color="#16a34a" style={{ marginRight: 8 }} />
+                <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 0 }]}>
+                  Assign Delivery Boy
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setAssignDeliveryModal(false)}>
+                <Icon name="close" size={22} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {orderToDeliver && (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Order Summary Box */}
+                <View style={{ backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderRadius: 12, padding: 12, marginBottom: 14 }}>
+                  <Text style={{ fontSize: 14, fontWeight: "800", color: theme.text }}>
+                    Order #{orderToDeliver.orderId || orderToDeliver.id}
+                  </Text>
+                  <Text style={{ fontSize: 13, color: darkMode ? "#cbd5e1" : "#334155", marginTop: 4 }}>
+                    👤 {orderToDeliver.customerName || "Customer"} • 📞 {orderToDeliver.customerPhone || "N/A"}
+                  </Text>
+                  <Text style={{ fontSize: 12, color: "#ef4444", marginTop: 4, fontWeight: "600" }}>
+                    📍 {orderToDeliver.deliveryAddress || "Address not provided"}
+                  </Text>
+                  <Text style={{ fontSize: 14, fontWeight: "800", color: "#16a34a", marginTop: 6 }}>
+                    Total: ₹{orderToDeliver.totalAmount || orderToDeliver.total || 0} ({orderToDeliver.paymentMode || "COD"})
+                  </Text>
+                </View>
+
+                {/* Select Registered Delivery Boy */}
+                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text, marginBottom: 8 }}>
+                  Select Delivery Boy:
+                </Text>
+
+                {deliveryStaffList.length === 0 ? (
+                  <View style={{ padding: 12, backgroundColor: darkMode ? "#334155" : "#f1f5f9", borderRadius: 10, marginBottom: 12 }}>
+                    <Text style={{ fontSize: 12, color: "#64748b" }}>
+                      No delivery staff registered in Staff Creation. Enter details below or add delivery staff in Settings → Staff.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ gap: 8, marginBottom: 14 }}>
+                    {deliveryStaffList.map((staff) => {
+                      const isSel = selectedDeliveryStaff?.id === staff.id;
+                      return (
+                        <TouchableOpacity
+                          key={staff.id}
+                          onPress={() => {
+                            setSelectedDeliveryStaff(staff);
+                            setCustomDeliveryBoyName(staff.name);
+                            setCustomDeliveryBoyPhone(staff.mobile);
+                          }}
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            padding: 12,
+                            borderRadius: 12,
+                            borderWidth: 1.5,
+                            borderColor: isSel ? "#16a34a" : darkMode ? "#334155" : "#e2e8f0",
+                            backgroundColor: isSel ? (darkMode ? "#064e3b" : "#f0fdf4") : darkMode ? "#1e293b" : "#ffffff",
+                          }}
+                        >
+                          <View style={{ flexDirection: "row", alignItems: "center" }}>
+                            <Icon name="account-circle" size={26} color={isSel ? "#16a34a" : "#64748b"} style={{ marginRight: 8 }} />
+                            <View>
+                              <Text style={{ fontSize: 14, fontWeight: "700", color: theme.text }}>{staff.name}</Text>
+                              <Text style={{ fontSize: 11, color: "#64748b" }}>ID: {staff.staffId || staff.id} • 📞 {staff.mobile}</Text>
+                            </View>
+                          </View>
+                          <Icon name={isSel ? "check-circle" : "radiobox-blank"} size={20} color={isSel ? "#16a34a" : "#94a3b8"} />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {/* Or Custom Delivery Boy Details */}
+                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text, marginBottom: 6 }}>
+                  Or Custom Delivery Person:
+                </Text>
+                <TextInput
+                  placeholder="Delivery Boy Name"
+                  placeholderTextColor="#94a3b8"
+                  value={customDeliveryBoyName}
+                  onChangeText={(val) => {
+                    setCustomDeliveryBoyName(val);
+                    if (selectedDeliveryStaff && val !== selectedDeliveryStaff.name) {
+                      setSelectedDeliveryStaff(null);
+                    }
+                  }}
+                  style={[styles.modalInput, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0", color: theme.text }]}
+                />
+                <TextInput
+                  placeholder="Delivery Boy Phone Number"
+                  placeholderTextColor="#94a3b8"
+                  keyboardType="phone-pad"
+                  value={customDeliveryBoyPhone}
+                  onChangeText={setCustomDeliveryBoyPhone}
+                  style={[styles.modalInput, { backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderColor: darkMode ? "#334155" : "#e2e8f0", color: theme.text }]}
+                />
+
+                {/* Dispatch Button */}
+                <TouchableOpacity
+                  style={[styles.modalActionBtn, { backgroundColor: "#16a34a", paddingVertical: 14 }]}
+                  disabled={assigningLoading}
+                  onPress={handleAssignDelivery}
+                >
+                  {assigningLoading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={[styles.btnText, { fontSize: 15 }]}>
+                      🛵 Dispatch & Send to Delivery App
+                    </Text>
+                  )}
+                </TouchableOpacity>
+
+                {/* Share to WhatsApp option */}
+                {(customDeliveryBoyPhone || selectedDeliveryStaff?.mobile) ? (
+                  <TouchableOpacity
+                    style={[styles.modalActionBtn, { backgroundColor: "#25d366", marginTop: 8, paddingVertical: 12 }]}
+                    onPress={() => sendDeliveryWhatsAppMessage(orderToDeliver, selectedDeliveryStaff?.mobile || customDeliveryBoyPhone, selectedDeliveryStaff?.name || customDeliveryBoyName)}
+                  >
+                    <Icon name="whatsapp" size={18} color="#fff" style={{ marginRight: 6 }} />
+                    <Text style={styles.btnText}>Share Address to Delivery Boy WhatsApp</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* 🏬 STORE PICKUP / PACKED NOTIFICATION MODAL */}
+      <Modal visible={pickupModalVisible} transparent animationType="fade">
+        <View style={styles.modalBg}>
+          <View style={[styles.newModalBox, { backgroundColor: theme.card }]}>
+            <View style={{ alignItems: "center", marginBottom: 12 }}>
+              <View style={{ width: 50, height: 50, borderRadius: 25, backgroundColor: "#dcfce7", justifyContent: "center", alignItems: "center", marginBottom: 10 }}>
+                <Icon name="check-bold" size={26} color="#16a34a" />
+              </View>
+              <Text style={[styles.modalTitle, { color: theme.text, textAlign: "center", marginBottom: 4 }]}>
+                Order Packed Successfully! 🛍️
+              </Text>
+              <Text style={{ fontSize: 13, color: "#64748b", textAlign: "center", paddingHorizontal: 10 }}>
+                Customer has been notified: "Your order is packed! Get your product in shop: {shopProfile.name}".
+              </Text>
+            </View>
+
+            {orderToPickup && (
+              <View style={{ backgroundColor: darkMode ? "#1e293b" : "#f8fafc", borderRadius: 12, padding: 12, marginVertical: 10 }}>
+                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text }}>
+                  Customer: {orderToPickup.customerName || "Customer"} (📞 {orderToPickup.customerPhone || "N/A"})
+                </Text>
+                <Text style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>
+                  Order #{orderToPickup.orderId || orderToPickup.id} • Total: ₹{orderToPickup.totalAmount || orderToPickup.total || 0}
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[styles.modalActionBtn, { backgroundColor: "#25d366", marginTop: 8 }]}
+              onPress={() => {
+                sendPickupWhatsAppMessage(orderToPickup);
+                setPickupModalVisible(false);
+              }}
+            >
+              <Icon name="whatsapp" size={18} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={styles.btnText}>Send WhatsApp Notification</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.modalActionBtn, { backgroundColor: darkMode ? "#334155" : "#e2e8f0", marginTop: 8 }]}
+              onPress={() => setPickupModalVisible(false)}
+            >
+              <Text style={[styles.btnText, { color: darkMode ? "#fff" : "#1e293b" }]}>Done</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -847,5 +1359,39 @@ const styles = StyleSheet.create({
   modalInput: { borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 12, fontSize: 15 },
   modalPickerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, padding: 14, borderRadius: 14, marginBottom: 10 },
   modalPickerText: { fontWeight: "600", fontSize: 14 },
-  modalActionBtn: { flex: 1, padding: 14, borderRadius: 14, alignItems: "center", marginTop: 10 }
+  modalActionBtn: { flex: 1, padding: 14, borderRadius: 14, alignItems: "center", marginTop: 10, flexDirection: "row", justifyContent: "center" },
+
+  /* Delivery Mode Banner Styles */
+  deliveryBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1.5,
+  },
+  deliveryToggleBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  deliveryToggleBtnText: {
+    color: "#ffffff",
+    fontWeight: "800",
+    fontSize: 11,
+  },
+  assignedDeliveryBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 8,
+    marginTop: 10,
+  },
 });

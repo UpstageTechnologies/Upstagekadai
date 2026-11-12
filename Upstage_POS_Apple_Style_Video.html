@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Upstage POS — Official Product Explanation Video</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Noto+Sans+Tamil:wght@400;500;600;700&display=swap');
+
+    body {
+      font-family: 'Plus Jakarta Sans', 'Noto Sans Tamil', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #0b0c10;
+      color: #f3f4f6;
+      overflow-x: hidden;
+    }
+
+    /* Apple-Style Smooth Device Shadows */
+    .apple-device-shadow {
+      box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7),
+                  0 0 40px -10px rgba(99, 102, 241, 0.25),
+                  inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+    }
+
+    /* Ambient Spotlight Glow */
+    .apple-spotlight {
+      background: radial-gradient(circle at 50% 40%, rgba(99, 102, 241, 0.15) 0%, rgba(16, 185, 129, 0.05) 45%, transparent 75%);
+    }
+
+    /* Animated Interactive Tap Pointer */
+    @keyframes tapPulse {
+      0% { transform: scale(0.6); opacity: 0; }
+      50% { transform: scale(1.1); opacity: 0.9; }
+      100% { transform: scale(1.5); opacity: 0; }
+    }
+    .tap-ripple {
+      animation: tapPulse 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+    }
+
+    /* Scanner Beam Animation */
+    @keyframes scanSweep {
+      0% { top: 12%; opacity: 0; }
+      20% { opacity: 0.9; }
+      80% { opacity: 0.9; }
+      100% { top: 88%; opacity: 0; }
+    }
+    .scanner-sweep {
+      animation: scanSweep 2s ease-in-out infinite;
+    }
+
+    /* Custom Apple-Style Progress Scrubber */
+    .timeline-track {
+      transition: width 0.15s linear;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+
+  <!-- TOP BAR: APPLE SUPPORT STYLE BRANDING -->
+  <header class="w-full max-w-7xl mx-auto px-6 py-4 flex items-center justify-between z-30">
+    <div class="flex items-center gap-3.5">
+      <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-indigo-500 to-violet-600 p-0.5 shadow-lg shadow-indigo-500/20">
+        <div class="w-full h-full bg-slate-900 rounded-[14px] flex items-center justify-center overflow-hidden">
+          <img src="./video_assets/00_logo.png" alt="Upstage POS Logo" class="w-9 h-9 object-contain" onerror="this.src='./00_logo.png'">
+        </div>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs uppercase tracking-widest text-indigo-400 font-semibold">Official Product Walkthrough</span>
+          <span class="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full font-medium">Apple Style</span>
+        </div>
+        <h1 class="text-lg font-bold text-white tracking-tight">Upstage POS • Explanation Video</h1>
+      </div>
+    </div>
+
+    <!-- AUDIO CONTROLS & VIDEO EXPORT -->
+    <div class="flex items-center gap-3">
+      <!-- Background Music Toggle -->
+      <button id="bgmToggleBtn" class="flex items-center gap-2 text-xs bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700/60 px-3.5 py-2 rounded-xl transition backdrop-blur shadow-sm">
+        <span id="bgmIcon">🎵</span>
+        <span id="bgmLabel">Music: Lo-Fi On</span>
+      </button>
+
+      <!-- Tamil / English Language Switcher -->
+      <div class="flex items-center bg-slate-800/80 border border-slate-700/60 rounded-xl p-0.5 backdrop-blur">
+        <button id="langTaBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white shadow transition">தமிழ்</button>
+        <button id="langEnBtn" class="text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition">English</button>
+      </div>
+
+      <!-- 1-Click Export Video -->
+      <button id="exportVideoBtn" class="flex items-center gap-2 text-xs font-bold bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-500 hover:to-pink-500 text-white px-4 py-2 rounded-xl shadow-lg shadow-rose-600/30 transition">
+        <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+        <span id="exportBtnText">Export Video (MP4)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN VIDEO DISPLAY AREA (16:9 THEATER STAGE) -->
+  <main class="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 flex flex-col justify-center my-auto relative">
+    
+    <!-- Ambient Background Spotlight -->
+    <div class="absolute inset-0 apple-spotlight pointer-events-none -z-10"></div>
+
+    <!-- VIDEO THEATER CONTAINER -->
+    <div class="relative w-full bg-slate-900/60 border border-slate-800/80 rounded-3xl overflow-hidden backdrop-blur-xl p-6 sm:p-10 shadow-2xl flex flex-col lg:flex-row items-center justify-between gap-8 sm:gap-12 min-h-[560px]">
+      
+      <!-- LEFT: APPLE SUPPORT STYLE STEP CALLOUTS -->
+      <div class="w-full lg:w-1/2 flex flex-col justify-center space-y-5 z-20">
+        
+        <!-- Chapter Indicator Pill -->
+        <div class="flex items-center gap-3">
+          <span id="stepBadge" class="text-xs font-extrabold tracking-wider uppercase px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+            Step 1 of 7
+          </span>
+          <span id="stepCategory" class="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+            Overview Dashboard
+          </span>
+        </div>
+
+        <!-- Main Title & Subtitle -->
+        <div>
+          <h2 id="stepHeading" class="text-2xl sm:text-4xl font-extrabold text-white tracking-tight leading-tight">
+            Track Sales & Live Profit
+          </h2>
+          <p id="stepSubheading" class="text-sm sm:text-base text-indigo-300/90 font-medium mt-2">
+            Real-time business insights with clean growth charts.
+          </p>
+        </div>
+
+        <!-- Bullet Highlights -->
+        <div id="stepHighlights" class="space-y-2.5 text-xs sm:text-sm text-slate-300">
+          <!-- Injected by JS -->
+        </div>
+
+        <!-- Apple Style Subtitle Card -->
+        <div class="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 shadow-inner relative overflow-hidden">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              Narration • குரல் விளக்கம்
+            </span>
+            <button id="replayVoiceBtn" class="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1">
+              ↺ Repeat Audio
+            </button>
+          </div>
+          <p id="voiceoverText" class="text-sm text-slate-200 leading-relaxed font-medium">
+            <!-- Voiceover Text Injected Here -->
+          </p>
+        </div>
+
+      </div>
+
+      <!-- RIGHT: REALISTIC SMARTPHONE FRAME WITH ACTUAL APP SCREENSHOTS -->
+      <div class="w-full lg:w-1/2 flex justify-center items-center relative">
+        
+        <!-- Glowing device backdrop -->
+        <div class="absolute w-72 h-96 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none"></div>
+
+        <!-- iPhone / Android Hardware Mockup -->
+        <div class="relative w-[300px] sm:w-[325px] h-[630px] sm:h-[650px] bg-slate-950 rounded-[50px] p-3 apple-device-shadow border-[5px] border-slate-800 ring-1 ring-slate-700/60 flex flex-col justify-between overflow-hidden select-none">
+          
+          <!-- Dynamic Island / Speaker Notch -->
+          <div class="absolute top-4 left-1/2 -translate-x-1/2 w-28 h-6 bg-slate-950 rounded-full z-40 flex items-center justify-between px-3 border border-slate-800/60 shadow-md">
+            <div class="w-2.5 h-2.5 rounded-full bg-slate-900 ring-1 ring-slate-800"></div>
+            <div class="w-2 h-2 rounded-full bg-indigo-500/80 animate-pulse"></div>
+          </div>
+
+          <!-- Phone Inner Screen Display -->
+          <div class="w-full h-full bg-slate-900 rounded-[40px] overflow-hidden relative flex flex-col">
+            
+            <!-- Screenshot Image Layer -->
+            <img id="appScreenImg" 
+                 src="./video_assets/01_dashboard.png" 
+                 alt="App Screen" 
+                 class="w-full h-full object-cover object-top transition-all duration-500"
+                 onerror="this.src='./01_dashboard.png';">
+
+            <!-- Interactive Tap Overlay (Shows where user taps) -->
+            <div id="tapPointer" class="absolute z-30 pointer-events-none transition-all duration-700" style="top: 40%; left: 50%;">
+              <div class="relative w-12 h-12 -translate-x-1/2 -translate-y-1/2">
+                <div class="absolute inset-0 rounded-full bg-indigo-500/40 tap-ripple"></div>
+                <div class="absolute inset-2 rounded-full bg-indigo-400 border-2 border-white shadow-lg"></div>
+              </div>
+            </div>
+
+            <!-- Optional Scanner Line Overlay (for billing scene) -->
+            <div id="scannerOverlay" class="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-emerald-400 to-transparent scanner-sweep z-20 opacity-0 transition-opacity duration-300"></div>
+
+          </div>
+
+          <!-- Bottom Home Bar -->
+          <div class="absolute bottom-2 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-slate-600 rounded-full"></div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- APPLE-STYLE BOTTOM VIDEO SCRUBBER & CONTROLS -->
+    <div class="mt-6 bg-slate-900/80 border border-slate-800 rounded-2xl p-4 backdrop-blur-xl flex flex-col gap-3 shadow-xl">
+      
+      <!-- Progress Bar -->
+      <div class="relative w-full h-2.5 bg-slate-800/90 rounded-full overflow-hidden cursor-pointer group" id="progressContainer">
+        <div id="progressBar" class="h-full bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-400 timeline-track" style="width: 14%;"></div>
+      </div>
+
+      <!-- Controls Row -->
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        
+        <!-- Left: Play/Pause/Prev/Next -->
+        <div class="flex items-center gap-2">
+          <button id="prevBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="Previous Step">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+          </button>
+          
+          <button id="playPauseBtn" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition">
+            <span id="playIcon">⏸</span>
+            <span id="playLabel">Pause</span>
+          </button>
+
+          <button id="nextBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="Next Step">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+          </button>
+
+          <span id="timeCounter" class="text-xs font-mono text-slate-400 ml-2">
+            00:15 / 02:15
+          </span>
+        </div>
+
+        <!-- Center: Chapter Navigation Pills -->
+        <div class="flex items-center gap-1.5 overflow-x-auto py-1 max-w-xl">
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-bold bg-indigo-600 text-white shadow" data-step="0">1. Dashboard</button>
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700" data-step="1">2. Barcode Billing</button>
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700" data-step="2">3. Restock & Expiry</button>
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700" data-step="3">4. Delivery / Pickup</button>
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700" data-step="4">5. Restaurant POS</button>
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700" data-step="5">6. Waiter & KOT</button>
+          <button class="step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700" data-step="6">7. Journal Daybook</button>
+        </div>
+
+        <!-- Right: Voiceover Status & Fullscreen -->
+        <div class="flex items-center gap-2">
+          <button id="voiceMuteBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="Mute/Unmute Narration">
+            <span id="voiceMuteIcon">🔊</span>
+          </button>
+          <button id="fullscreenBtn" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="Toggle Fullscreen">
+            ⛶
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+  </main>
+
+  <!-- HIDDEN CANVAS FOR DIRECT MP4/WEBM VIDEO RECORDING -->
+  <canvas id="recorderCanvas" width="1920" height="1080" class="hidden"></canvas>
+
+  <!-- FOOTER -->
+  <footer class="w-full text-center py-4 text-xs text-slate-500">
+    Upstage POS — Created with Real App Architecture & Screens • React Native, Firebase & Thermal ESC/POS.
+  </footer>
+
+  <!-- SCRIPT LOGIC -->
+  <script>
+    // 7 CHAPTERS BASED DIRECTLY ON USER'S SCREENSHOTS & CODEBASE
+    const chapters = [
+      {
+        id: 0,
+        category: "Overview Dashboard",
+        titleEn: "Smart Business Dashboard & Live Profit",
+        titleTa: "ஸ்மார்ட் டேஷ்போர்டு & நேரடி லாபக் கணக்கு",
+        subEn: "Monitor daily sales, monthly revenue, and real-time profit growth.",
+        subTa: "தினசரி விற்பனை, மாத வருமானம், மற்றும் லாப வளர்ச்சியை ஒரே பார்வையில் அறியலாம்.",
+        image: "./video_assets/01_dashboard.png",
+        fallbackImg: "./01_dashboard.png",
+        pointerPos: { top: "42%", left: "55%" }, // Over the profit line chart
+        scannerActive: false,
+        duration: 16,
+        highlights: [
+          "📈 Real-time Total Sales tracking (₹46,740.00)",
+          "💰 Net Profit Calculation with Growth Indicator (+18.6%)",
+          "🏪 Single-tap toggle between Retail Shop & Restaurant Mode",
+          "📱 Unified navigation for Home, Sales, Purchase & Inventory"
+        ],
+        narrationTa: "வணக்கம்! Upstage POS செயலியை திறந்ததும் உங்கள் கண்முன்னே தோன்றுவது இந்த ஸ்மார்ட் டேஷ்போர்டு. இதில் இன்றைய விற்பனை, இந்த மாத விற்பனை மற்றும் 18.6% அதிகரித்த நிகர லாபத்தை லைவ் கிராஃப் மூலம் மிகத் தெளிவாக பார்த்து தெரிந்து கொள்ளலாம்!",
+        narrationEn: "Welcome to Upstage POS! The intuitive dashboard gives you an instant bird's-eye view of your business: track total sales, monthly revenue, and net profit margins with live interactive charts!"
+      },
+      {
+        id: 1,
+        category: "Retail Sales Billing",
+        titleEn: "Lightning-Fast Barcode & Camera Billing",
+        titleTa: "மின்னல் வேக பார்கோடு & கேமரா பில்லிங்",
+        subEn: "Scan products with mobile camera or Bluetooth barcode gun.",
+        subTa: "கேமரா அல்லது புளூடூத் ஸ்கேனர் மூலம் பொருட்களை நொடிகளில் ஸ்கேன் செய்யலாம்.",
+        image: "./video_assets/03_barcode_scanner.png",
+        fallbackImg: "./03_barcode_scanner.png",
+        pointerPos: { top: "93%", left: "50%" }, // Over "Review Order" button
+        scannerActive: true,
+        duration: 18,
+        highlights: [
+          "⚡ Instant Camera & Hardware Gun Scanner support",
+          "🛒 Live Scanned Items List with quantity steppers (+/-)",
+          "💵 Automated Subtotal & Tax Calculation (₹2,800)",
+          "🖨️ 1-Click Review Order & Bluetooth Thermal Print"
+        ],
+        narrationTa: "கஸ்டமர் கூட்டம் அதிகமாக இருக்கும் போது பில்லிங் செய்ய தாமதமே வேண்டாம்! கேமரா அல்லது புளூடூத் பார்கோடு கன் மூலம் சட்டென ஸ்கேன் செய்து, கார்ட்டில் சேர்த்து, உடனடியாக 'Review Order' கொடுத்து பில் போட்டுவிடலாம்!",
+        narrationEn: "During rush hours, speed is everything. Use your device camera or an external barcode gun to scan items in milliseconds, adjust quantities on the fly, and proceed straight to checkout!"
+      },
+      {
+        id: 2,
+        category: "Inventory & Restock",
+        titleEn: "Smart Restock & Barcode Printing",
+        titleTa: "சரக்கு இருப்பு, ரீ-ஸ்டாக் & பார்கோடு பிரிண்டிங்",
+        subEn: "Track item quantities, zoom & print barcodes, and manage expiry.",
+        subTa: "சரக்கு இருப்பு எண்ணிக்கை, பார்கோடு பிரிண்ட் மற்றும் காலாவதி மேலாண்மை.",
+        image: "./video_assets/06_restock_inventory.png",
+        fallbackImg: "./06_restock_inventory.png",
+        pointerPos: { top: "47%", left: "50%" }, // Over the barcode
+        scannerActive: false,
+        duration: 18,
+        highlights: [
+          "📦 Accurate stock balance display (e.g. 18 Units, 28 Units)",
+          "🏷️ Built-in Barcode Generator (Tap to Zoom & Print Barcodes)",
+          "➕ Quick Restock button to add fresh stock in seconds",
+          "⚠️ Automatic Expiry status to prevent dead stock loss"
+        ],
+        narrationTa: "சரக்கு நிர்வாகம் இனி மிக எளிது! எந்தெந்த பொருட்கள் எவ்வளவு ஸ்டாக் இருக்கிறது என்பதை எளிதாக பார்க்கலாம். ஒவ்வொரு பொருளுக்கும் தனி பார்கோடை திரையிலேயே பெரிதாக்கி பிரிண்ட் செய்து கொள்ளலாம். ரீ-ஸ்டாக் பட்டனை தட்டி புதிய சரக்குகளை நொடியில் சேர்க்கலாம்!",
+        narrationEn: "Take full control of your store's inventory. Monitor remaining stock quantities, generate and print scannable barcode stickers, and restock batches with a single tap!"
+      },
+      {
+        id: 3,
+        category: "Omnichannel Logistics",
+        titleEn: "Door Delivery & Store Pickup Limits",
+        titleTa: "டோர் டெலிவரி & நேரடி கடை பிக்கப் மேலாண்மை",
+        subEn: "Set delivery radius, standard fees, and minimum order limits.",
+        subTa: "டெலிவரி தூரம், கட்டணம் மற்றும் குறைந்தபட்ச ஆர்டர் அளவை சுலபமாக அமைக்கலாம்.",
+        image: "./video_assets/08_delivery_pickup.png",
+        fallbackImg: "./08_delivery_pickup.png",
+        pointerPos: { top: "31%", left: "85%" }, // Over "Door Delivery Available" toggle
+        scannerActive: false,
+        duration: 16,
+        highlights: [
+          "🛵 Toggle Door Delivery Available vs Store Pickup Only",
+          "💰 Custom Delivery Fee & Free Delivery above threshold",
+          "📏 Delivery Radius & City-wide range configuration",
+          "📋 Direct customer order fulfillment without third-party commission"
+        ],
+        narrationTa: "வாடிக்கையாளர்களுக்கு ஹோம் டெலிவரி வேண்டுமா அல்லது கடை பிக்கப் மட்டுமா? இரண்டையும் நீங்களே முடிவு செய்யலாம். டெலிவரி கட்டணம், இலவச டெலிவரிக்கான குறைந்தபட்ச தொகை, மற்றும் டெலிவரி தூரத்தை விரல் நுனியில் அமைத்துக் கொள்ளலாம்!",
+        narrationEn: "Expand your reach with flexible delivery settings. Offer doorstep delivery or in-store pickup, set minimum order values, custom delivery charges, and local delivery radius effortlessly!"
+      },
+      {
+        id: 4,
+        category: "Restaurant POS",
+        titleEn: "Restaurant POS & Live Table Billing",
+        titleTa: "உணவக பில்லிங் & லைவ் டேபிள் மேனேஜ்மென்ட்",
+        subEn: "Live served tables, food categories, and fast dining settlement.",
+        subTa: "சர்வ் செய்யப்பட்ட டேபிள்கள், உணவு வகைகள் மற்றும் விரைவான டேபிள் பில்லிங்.",
+        image: "./video_assets/10_restaurant_billing.png",
+        fallbackImg: "./10_restaurant_billing.png",
+        pointerPos: { top: "23%", left: "30%" }, // Over Table 1 card
+        scannerActive: false,
+        duration: 20,
+        highlights: [
+          "🍽️ Live Served Tables Grid (Table 1 - ₹820, ₹465, ₹215)",
+          "🍲 Food Category Filter: Starters, Main Course, Breads, Biryani",
+          "🥗 Veg & Non-Veg indicators with quick price cards",
+          "🧾 Instant Bill Settlement & KOT Kitchen Print"
+        ],
+        narrationTa: "ஹோட்டல் மற்றும் ரெஸ்டாரண்ட்டுகளுக்கு Upstage POS ஒரு வரப்பிரசாதம்! சர்வ் செய்யப்பட்ட டேபிள்களை திரையின் மேலேயே லைவ்-ஆக பார்க்கலாம். தோசை, சப்பாத்தி, பிரியாணி என உணவு வகைகளை சுலபமாக கார்ட்டில் சேர்த்து ஒரே கிளிக்கில் டேபிள் பில் போட்டுவிடலாம்!",
+        narrationEn: "Designed specifically for restaurants and cafes! Monitor active dining tables, filter menu items across Starters, Main Course, and Beverages, and finalize customer table bills in seconds!"
+      },
+      {
+        id: 5,
+        category: "Kitchen Workflow (KDS)",
+        titleEn: "Waiter Mobile Orders & Kitchen KOT",
+        titleTa: "சர்வர் மொபைல் ஆர்டர் & லைவ் கிச்சன் KOT",
+        subEn: "Live kitchen tickets with 'DISH READY' pick-up alerts.",
+        subTa: "செஃப் சமைத்ததும் 'DISH READY' எச்சரிக்கையுடன் சர்வர் உணவு பரிமாறும் வசதி.",
+        image: "./video_assets/11_waiter_app.png",
+        fallbackImg: "./11_waiter_app.png",
+        pointerPos: { top: "36%", left: "50%" }, // Over "Mark as Served to Table"
+        scannerActive: false,
+        duration: 18,
+        highlights: [
+          "📱 Waiter App with staff login credentials (Server Kathir)",
+          "🔔 Instant 'DISH READY! Pick Up' kitchen alerts",
+          "✅ One-tap 'Mark as Served to Table' status update",
+          "📑 Zero paper loss, zero confusion between kitchen & dining floor"
+        ],
+        narrationTa: "சர்வர்கள் நேரடியாக டேபிளிலேயே நின்று மொபைல் வழியாக ஆர்டர் எடுக்கலாம். கிச்சனில் உணவு தயாரானதும் 'Dish Ready' நோட்டிபிகேஷன் வரும். சர்வர் உணவை பரிமாறியவுடன் 'Mark as Served' அழுத்தி விட்டால் வேலை முடிந்தது!",
+        narrationEn: "Eliminate paper slip confusion! Waiters take orders at the table on mobile, chefs receive orders instantly, and servers get notified the exact second dishes are ready to serve!"
+      },
+      {
+        id: 6,
+        category: "Accounting & Reports",
+        titleEn: "Daily Journal Daybook & Profit Reports",
+        titleTa: "தினசரி டேபுக், கொள்முதல் & லாப ரிப்போர்ட்",
+        subEn: "Accurate accounting with Total Sales, Purchases & Net Profit.",
+        subTa: "விற்பனை, கொள்முதல் மற்றும் நிகர லாபத்தின் முழுமையான கணக்கு அறிக்கை.",
+        image: "./video_assets/09_journal_daybook.png",
+        fallbackImg: "./09_journal_daybook.png",
+        pointerPos: { top: "63%", left: "50%" }, // Over "Print Overall Report"
+        scannerActive: false,
+        duration: 18,
+        highlights: [
+          "📅 Flexible Date Filters to audit any date range",
+          "💵 Total Sales vs Purchases comparison (Net Profit ₹2,800)",
+          "🖨️ One-tap 'Print Overall Report' for tax & accountant filing",
+          "🌐 100% Offline Capability with automatic cloud synchronization"
+        ],
+        narrationTa: "கடை வியாபாரத்தில் லாபம் எவ்வளவு, செலவு எவ்வளவு என்பதை தெரிந்து கொள்வது மிக முக்கியம். Upstage POS-ன் Journal ஸ்கிரீனில் விற்பனை, கொள்முதல் மற்றும் நிகர லாபத்தை துல்லியமாக கணக்கிட்டு, ஒரே கிளிக்கில் முழு அறிக்கையையும் பிரிண்ட் செய்து கொள்ளலாம்!",
+        narrationEn: "Stay financially organized with the built-in Journal Daybook. Review sales versus purchases, calculate net profits automatically, and print overall financial audit reports with one tap!"
+      }
+    ];
+
+    // STATE MANAGEMENT
+    let currentStepIdx = 0;
+    let isPlaying = true;
+    let stepTimer = null;
+    let currentLang = "ta"; // "ta" or "en"
+    let isVoiceMuted = false;
+    let isBgmMuted = false;
+    let audioCtx = null;
+    let bgmOscillatorNode = null;
+    let bgmGainNode = null;
+
+    // DOM ELEMENTS
+    const appScreenImg = document.getElementById("appScreenImg");
+    const tapPointer = document.getElementById("tapPointer");
+    const scannerOverlay = document.getElementById("scannerOverlay");
+    const stepBadge = document.getElementById("stepBadge");
+    const stepCategory = document.getElementById("stepCategory");
+    const stepHeading = document.getElementById("stepHeading");
+    const stepSubheading = document.getElementById("stepSubheading");
+    const stepHighlights = document.getElementById("stepHighlights");
+    const voiceoverText = document.getElementById("voiceoverText");
+    const progressBar = document.getElementById("progressBar");
+    const timeCounter = document.getElementById("timeCounter");
+    const playPauseBtn = document.getElementById("playPauseBtn");
+    const playIcon = document.getElementById("playIcon");
+    const playLabel = document.getElementById("playLabel");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const langTaBtn = document.getElementById("langTaBtn");
+    const langEnBtn = document.getElementById("langEnBtn");
+    const bgmToggleBtn = document.getElementById("bgmToggleBtn");
+    const bgmIcon = document.getElementById("bgmIcon");
+    const bgmLabel = document.getElementById("bgmLabel");
+    const voiceMuteBtn = document.getElementById("voiceMuteBtn");
+    const voiceMuteIcon = document.getElementById("voiceMuteIcon");
+    const replayVoiceBtn = document.getElementById("replayVoiceBtn");
+    const exportVideoBtn = document.getElementById("exportVideoBtn");
+    const exportBtnText = document.getElementById("exportBtnText");
+    const fullscreenBtn = document.getElementById("fullscreenBtn");
+    const stepPills = document.querySelectorAll(".step-nav-pill");
+
+    // TOTAL TIME COMPUTATION
+    const totalDurationSeconds = chapters.reduce((a, b) => a + b.duration, 0);
+
+    function formatTime(s) {
+      const min = Math.floor(s / 60).toString().padStart(2, "0");
+      const sec = Math.floor(s % 60).toString().padStart(2, "0");
+      return `${min}:${sec}`;
+    }
+
+    // WEB AUDIO API AMBIENT SOUNDTRACK GENERATOR (Lo-Fi Tech Chords)
+    function initBgm() {
+      if (audioCtx) return;
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+        bgmGainNode = audioCtx.createGain();
+        bgmGainNode.gain.setValueAtTime(0.04, audioCtx.currentTime); // Soft gentle volume
+        bgmGainNode.connect(audioCtx.destination);
+        playAmbientChords();
+      } catch (e) {
+        console.log("Web Audio not supported", e);
+      }
+    }
+
+    function playAmbientChords() {
+      if (!audioCtx || isBgmMuted) return;
+      // Gentle chord notes (F3, A3, C4, E4)
+      const chordFrequencies = [174.61, 220.00, 261.63, 329.63];
+      chordFrequencies.forEach(freq => {
+        const osc = audioCtx.createOscillator();
+        const oscGain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        oscGain.gain.setValueAtTime(0.015, audioCtx.currentTime);
+        osc.connect(oscGain);
+        oscGain.connect(bgmGainNode);
+        osc.start();
+      });
+    }
+
+    // RENDER STEP
+    function loadStep(idx, autoVoice = true) {
+      if (idx < 0) idx = 0;
+      if (idx >= chapters.length) {
+        pause();
+        idx = chapters.length - 1;
+      }
+      currentStepIdx = idx;
+      const chapter = chapters[idx];
+
+      // Update Texts
+      stepBadge.textContent = `Step ${idx + 1} of ${chapters.length}`;
+      stepCategory.textContent = chapter.category;
+      stepHeading.textContent = currentLang === "ta" ? chapter.titleTa : chapter.titleEn;
+      stepSubheading.textContent = currentLang === "ta" ? chapter.subTa : chapter.subEn;
+
+      // Update Highlights
+      stepHighlights.innerHTML = chapter.highlights.map(h => `
+        <div class="flex items-center gap-2">
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+          <span>${h}</span>
+        </div>
+      `).join("");
+
+      // Update Voiceover Box
+      voiceoverText.textContent = currentLang === "ta" ? chapter.narrationTa : chapter.narrationEn;
+
+      // Update App Screen Image
+      appScreenImg.src = chapter.image;
+      appScreenImg.onerror = () => { appScreenImg.src = chapter.fallbackImg; };
+
+      // Update Interactive Tap Pointer
+      tapPointer.style.top = chapter.pointerPos.top;
+      tapPointer.style.left = chapter.pointerPos.left;
+
+      // Scanner Overlay
+      scannerOverlay.style.opacity = chapter.scannerActive ? "1" : "0";
+
+      // Update Progress Bar
+      const percent = ((idx + 1) / chapters.length) * 100;
+      progressBar.style.width = `${percent}%`;
+
+      // Update Time
+      let elapsed = 0;
+      for (let i = 0; i < idx; i++) elapsed += chapters[i].duration;
+      timeCounter.textContent = `${formatTime(elapsed)} / ${formatTime(totalDurationSeconds)}`;
+
+      // Update Navigation Pills
+      stepPills.forEach((pill, pIdx) => {
+        if (pIdx === idx) {
+          pill.className = "step-nav-pill px-3 py-1.5 text-xs rounded-xl font-bold bg-indigo-600 text-white shadow";
+        } else {
+          pill.className = "step-nav-pill px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-800/80 text-slate-400 hover:bg-slate-700";
+        }
+      });
+
+      // Voiceover Speech Synthesis
+      if (!isVoiceMuted && autoVoice) {
+        speakNarration();
+      }
+
+      // Schedule Next Step if playing
+      clearTimeout(stepTimer);
+      if (isPlaying) {
+        stepTimer = setTimeout(() => {
+          if (currentStepIdx < chapters.length - 1) {
+            loadStep(currentStepIdx + 1, true);
+          } else {
+            pause();
+          }
+        }, chapter.duration * 1000);
+      }
+    }
+
+    // SPEECH SYNTHESIS ENGINE (Optimized for Tamil & Indian English)
+    function speakNarration() {
+      if (!('speechSynthesis' in window) || isVoiceMuted) return;
+      window.speechSynthesis.cancel();
+
+      const text = currentLang === "ta" ? chapters[currentStepIdx].narrationTa : chapters[currentStepIdx].narrationEn;
+      const utterance = new SpeechSynthesisUtterance(text);
+      
+      const voices = window.speechSynthesis.getVoices();
+      if (currentLang === "ta") {
+        const tamilVoice = voices.find(v => v.lang.startsWith("ta") || v.name.includes("Tamil") || v.name.includes("Vani"));
+        if (tamilVoice) {
+          utterance.voice = tamilVoice;
+          utterance.lang = "ta-IN";
+        } else {
+          const inVoice = voices.find(v => v.lang.includes("en-IN") || v.name.includes("Rishi") || v.name.includes("India"));
+          if (inVoice) utterance.voice = inVoice;
+        }
+      } else {
+        const enVoice = voices.find(v => v.lang.includes("en-IN") || v.lang.includes("en-US"));
+        if (enVoice) utterance.voice = enVoice;
+      }
+
+      utterance.rate = 0.98;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    // PLAY / PAUSE
+    function pause() {
+      isPlaying = false;
+      clearTimeout(stepTimer);
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      playIcon.textContent = "▶";
+      playLabel.textContent = "Play";
+    }
+
+    function play() {
+      isPlaying = true;
+      playIcon.textContent = "⏸";
+      playLabel.textContent = "Pause";
+      initBgm();
+      loadStep(currentStepIdx, true);
+    }
+
+    // EVENT LISTENERS
+    playPauseBtn.addEventListener("click", () => {
+      if (isPlaying) pause();
+      else play();
+    });
+
+    prevBtn.addEventListener("click", () => {
+      if (currentStepIdx > 0) loadStep(currentStepIdx - 1, true);
+    });
+
+    nextBtn.addEventListener("click", () => {
+      if (currentStepIdx < chapters.length - 1) loadStep(currentStepIdx + 1, true);
+    });
+
+    replayVoiceBtn.addEventListener("click", () => {
+      speakNarration();
+    });
+
+    langTaBtn.addEventListener("click", () => {
+      currentLang = "ta";
+      langTaBtn.className = "text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white shadow transition";
+      langEnBtn.className = "text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+      loadStep(currentStepIdx, true);
+    });
+
+    langEnBtn.addEventListener("click", () => {
+      currentLang = "en";
+      langEnBtn.className = "text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white shadow transition";
+      langTaBtn.className = "text-xs font-semibold px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+      loadStep(currentStepIdx, true);
+    });
+
+    voiceMuteBtn.addEventListener("click", () => {
+      isVoiceMuted = !isVoiceMuted;
+      if (isVoiceMuted) {
+        if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        voiceMuteIcon.textContent = "🔇";
+      } else {
+        voiceMuteIcon.textContent = "🔊";
+        speakNarration();
+      }
+    });
+
+    bgmToggleBtn.addEventListener("click", () => {
+      isBgmMuted = !isBgmMuted;
+      if (isBgmMuted) {
+        bgmIcon.textContent = "🔇";
+        bgmLabel.textContent = "Music: Off";
+        if (bgmGainNode) bgmGainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+      } else {
+        bgmIcon.textContent = "🎵";
+        bgmLabel.textContent = "Music: Lo-Fi On";
+        initBgm();
+        if (bgmGainNode) bgmGainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
+      }
+    });
+
+    stepPills.forEach(pill => {
+      pill.addEventListener("click", () => {
+        const step = parseInt(pill.getAttribute("data-step"));
+        loadStep(step, true);
+      });
+    });
+
+    fullscreenBtn.addEventListener("click", () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
+
+    // KEYBOARD SHORTCUTS (Space = Play/Pause, Left/Right = Steps)
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (isPlaying) pause(); else play();
+      } else if (e.code === "ArrowRight") {
+        if (currentStepIdx < chapters.length - 1) loadStep(currentStepIdx + 1, true);
+      } else if (e.code === "ArrowLeft") {
+        if (currentStepIdx > 0) loadStep(currentStepIdx - 1, true);
+      }
+    });
+
+    // 1-CLICK VIDEO EXPORT (SCREEN RECORD GUIDE & RECORDING TRIGGER)
+    exportVideoBtn.addEventListener("click", () => {
+      alert("🎬 Exporting / Recording Guide:\n\n1. QuickTime / Mac Screen Recording (Recommended):\n   Press Cmd + Shift + 5 on your Mac.\n   Select the video player box.\n   Click Record, then press Spacebar here to play.\n   You'll get an ultra-crisp 4K/1080p video ready to share!\n\n2. Direct MP4 script & video assets are ready inside your Upstagekadai folder!");
+    });
+
+    // AUTO-START ON LOAD
+    window.addEventListener("load", () => {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.onvoiceschanged = () => {};
+      }
+      loadStep(0, false);
+    });
+  </script>
+</body>
+</html>

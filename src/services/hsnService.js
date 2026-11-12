@@ -390,3 +390,193 @@ export const suggestHSNCode = async ({
     isAmbiguous,
   };
 };
+
+/**
+ * Fast synchronous lookup of an HSN directory entry.
+ * Checks exact match first, then prefix matching.
+ *
+ * @param {string} rawCode
+ * @returns {object | null}
+ */
+export const getHSNEntry = (rawCode) => {
+  if (rawCode === null || rawCode === undefined) return null;
+  const clean = String(rawCode).trim();
+  if (!clean) return null;
+
+  // Exact match
+  let match = HSN_DIRECTORY.find((item) => item.hsnCode === clean);
+  if (!match) {
+    // Prefix match
+    match = HSN_DIRECTORY.find(
+      (item) => item.hsnCode.startsWith(clean) || clean.startsWith(item.hsnCode)
+    );
+  }
+  return match || null;
+};
+
+/**
+ * Automatically derive structured category, subcategory, and metadata from an HSN code.
+ *
+ * @param {string} hsnCode
+ * @returns {{ mainCategory: string, subcategory: string, fullCategory: string, keywords: Array<string>, description: string, gstRate: string }}
+ */
+export const deriveCategoryFromHSN = (hsnCode) => {
+  const entry = getHSNEntry(hsnCode);
+  if (!entry || !entry.category) {
+    return {
+      mainCategory: "General",
+      subcategory: "",
+      fullCategory: "General",
+      keywords: [],
+      description: "",
+      gstRate: "",
+    };
+  }
+
+  // e.g. "Garments / Innerwear" -> main: "Garments", sub: "Innerwear"
+  // or "Footwear" -> main: "Footwear", sub: "Footwear"
+  const parts = entry.category.split("/").map((p) => p.trim());
+  const main = parts[0] || entry.category;
+  const sub = parts[1] || main;
+
+  return {
+    mainCategory: main,
+    subcategory: sub,
+    fullCategory: entry.category,
+    keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
+    description: entry.description || "",
+    gstRate: entry.gstRate || "",
+  };
+};
+
+// Known common retail search synonyms and phonetic misspellings
+const COMMON_SYNONYMS = {
+  underware: ["underwear", "innerwear", "underpants", "briefs", "boxer", "vest", "panties", "lingerie"],
+  underwear: ["underware", "innerwear", "underpants", "briefs", "boxer", "vest", "panties", "lingerie"],
+  innerware: ["innerwear", "underwear", "underpants", "briefs", "boxer", "vest"],
+  innerwear: ["innerware", "underwear", "underpants", "briefs", "boxer", "vest"],
+  boxer: ["boxers", "boxi", "briefs", "underwear", "underware"],
+  boxi: ["boxer", "boxers", "briefs", "underwear"],
+  briefs: ["brief", "underwear", "underware", "underpants"],
+  footware: ["footwear", "shoes", "slippers", "sandals", "boots"],
+  footwear: ["footware", "shoes", "slippers", "sandals", "boots"],
+  nightware: ["nightwear", "nighty", "pajamas", "pyjamas", "night suit"],
+  nightwear: ["nightware", "nighty", "pajamas", "pyjamas", "night suit"],
+  sleepware: ["sleepwear", "nightwear", "pajamas"],
+  sleepwear: ["sleepware", "nightwear", "pajamas"],
+  jocky: ["jockey", "underwear", "innerwear"],
+  jockey: ["jocky", "underwear", "innerwear"],
+  pant: ["pants", "trouser", "trousers", "jeans"],
+  pants: ["pant", "trouser", "trousers", "jeans"],
+  tshirt: ["t-shirt", "tee", "tshirts"],
+  tshirts: ["tshirt", "t-shirt", "tee"],
+  shirt: ["shirts"],
+  shirts: ["shirt"],
+  sari: ["saree", "saris", "sarees"],
+  saree: ["sari", "saris", "sarees"],
+  kurti: ["kurta", "kurtis"],
+  kurta: ["kurti", "kurtas"],
+};
+
+/**
+ * Intelligent professional search matcher for inventory and purchase products.
+ * Matches across:
+ * - Product Name, Brand, Sub Name / Variant
+ * - Category, Subcategory
+ * - HSN Code, Description
+ * - HSN Directory Category & Keywords
+ * - Phonetic / Common Retail Misspellings (e.g. "underware" -> "underwear" / "innerwear")
+ *
+ * @param {object} product - Inventory or purchase product item
+ * @param {string} searchQuery - Search query string entered by user
+ * @returns {boolean} - Whether product matches the search query
+ */
+export const matchProductSearch = (product, searchQuery) => {
+  if (!searchQuery || !searchQuery.trim()) return true;
+  if (!product) return false;
+
+  const rawQuery = String(searchQuery).toLowerCase().trim();
+  if (!rawQuery) return true;
+
+  // Build searchable text pool from product attributes
+  const pool = [];
+
+  const addText = (val) => {
+    if (val === null || val === undefined) return;
+    if (typeof val === "string") {
+      const trimmed = val.toLowerCase().trim();
+      if (trimmed) pool.push(trimmed);
+    } else if (typeof val === "number") {
+      pool.push(String(val));
+    } else if (Array.isArray(val)) {
+      val.forEach((item) => addText(item));
+    } else if (typeof val === "object") {
+      Object.values(val).forEach((v) => addText(v));
+    }
+  };
+
+  addText(product.itemName);
+  addText(product.name);
+  addText(product.brand);
+  addText(product.subName);
+  addText(product.variant);
+  addText(product.variants);
+  addText(product.category);
+  addText(product.categoryName);
+  addText(product.subcategory);
+  addText(product.subcategoryName);
+  addText(product.subCategory);
+  addText(product.size);
+  addText(product.unitType);
+  addText(product.barcode);
+  addText(product.hsnCode);
+  addText(product.description);
+  addText(product.hsnCategory);
+  addText(product.hsnKeywords);
+  addText(product.supplierName);
+
+  // Dynamic HSN Directory metadata expansion (enables matching even if category was stored as "General")
+  const hsnCodeToCheck = product.hsnCode || "";
+  if (hsnCodeToCheck) {
+    const hsnEntry = getHSNEntry(hsnCodeToCheck);
+    if (hsnEntry) {
+      addText(hsnEntry.hsnCode);
+      addText(hsnEntry.category);
+      addText(hsnEntry.description);
+      addText(hsnEntry.keywords);
+    }
+  }
+
+  // Combined searchable string for fast direct substring matching
+  const fullPoolString = pool.join(" ");
+
+  // Direct full query match
+  if (fullPoolString.includes(rawQuery)) return true;
+
+  // Split query into tokens (e.g. "underware jocky" -> ["underware", "jocky"])
+  const queryTokens = rawQuery.split(/[\s,._\-/]+/).filter((t) => t.length > 0);
+  if (queryTokens.length === 0) return true;
+
+  // Every token in query must find a match (either directly or via synonyms/keywords)
+  return queryTokens.every((token) => {
+    // 1. Direct token match in any pool entry
+    if (fullPoolString.includes(token)) return true;
+
+    // 2. Synonyms expansion (e.g. "underware" -> ["underwear", "innerwear", ...])
+    const synonyms = COMMON_SYNONYMS[token] || [];
+    for (const syn of synonyms) {
+      if (fullPoolString.includes(syn)) return true;
+    }
+
+    // 3. Prefix matching for tokens with length >= 3
+    if (token.length >= 3) {
+      const tokenPrefix = token.slice(0, token.length - 1);
+      for (const p of pool) {
+        if (p.includes(tokenPrefix)) return true;
+      }
+    }
+
+    return false;
+  });
+};
+
