@@ -1753,3 +1753,4 @@ export default function SalesScreen(props) {
 
   return <RetailSalesScreen {...props} />;
 }
+ 
