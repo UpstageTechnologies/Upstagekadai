@@ -159,6 +159,7 @@ export default function StaffCreationScreen({ navigation }) {
     let prefix = "EMP";
     if (role === "waiter") prefix = "WTR";
     else if (role === "kitchen") prefix = "KIT";
+    else if (role === "delivery") prefix = "DEL";
 
     try {
       let nextNum = 1;

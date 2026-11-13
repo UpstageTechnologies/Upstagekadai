@@ -19,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
           add(ScanBeepPackage())
           add(BackgroundRemoverPackage())
           add(BluetoothPrinterPackage())
+          add(UpiNotificationListenerPackage())
         },
     )
   }

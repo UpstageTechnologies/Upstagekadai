@@ -21,6 +21,10 @@ import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getSession, saveSession } from "../utils/session";
 import {
+  createSubscriptionOrder,
+  verifySubscriptionPayment,
+} from "../services/subscriptionPaymentService";
+import {
   PLAN_NAMES,
   PLAN_CONFIG,
   BILLING_CYCLES,
@@ -268,76 +272,79 @@ export default function SubscriptionScreen({ navigation }) {
       return;
     }
 
-    // 4. Handle Paid Plans (Premium & Pro) via Razorpay
+    // 4. Handle Paid Plans (Premium & Pro) via Razorpay Server-Side Architecture
     if (!RazorpayCheckout || typeof RazorpayCheckout.open !== "function") {
       Alert.alert("Payment Gateway Error", "Razorpay is currently unavailable on this device. Please try again.");
       setIsProcessing(false);
       setProcessingPlanKey(null);
+      isSubscribingRef.current = false;
       return;
     }
 
-    const userEmail = auth.currentUser?.email || userData?.email || "";
-    const userPhone = userData?.phone || userData?.mobile || auth.currentUser?.phoneNumber || "";
-    const shopDisplayName = userData?.shopName || userData?.businessName || "UpstageKadai";
-
-    const options = {
-      description: `${plan.name} (${plan.cycle === "yearly" ? "Yearly" : "Monthly"}) Subscription`,
-      currency: "INR",
-      key: "rzp_test_RqckwEGqKZFqMk",
-      amount: Math.round(Number(plan.price) * 100),
-      name: shopDisplayName,
-      prefill: {
-        email: userEmail,
-        contact: userPhone,
-        name: userData?.ownerName || shopDisplayName,
-      },
-      theme: {
-        color: plan.color,
-      },
-    };
-
     try {
-      const data = await RazorpayCheckout.open(options);
-
-      // Verify payment ID returned from gateway
-      if (!data?.razorpay_payment_id) {
-        throw new Error("Payment gateway did not return a valid transaction reference.");
-      }
-
-      // Prevent duplicate processing if identical payment ID was already stored
-      if (userData?.razorpayPaymentId && userData.razorpayPaymentId === data.razorpay_payment_id) {
-        Alert.alert("Notice", "This payment has already been credited to your account.");
-        return;
-      }
-      
-      // Calculate renewal or activation expiry (preserves remaining active days)
-      const newExpiry = calculateNewExpiry(plan.days, subscriptionExpiry);
-      const userRef = doc(db, "users", uid);
-      const userSnap = await getDoc(userRef);
-      let assignedUid = userSnap.data()?.customShopUid || uid;
-      
-      if (!assignedUid) {
-        assignedUid = `UID-${Math.floor(100000 + Math.random() * 900000)}`;
-      }
-
-      const limits = getPlanLimits(plan.name);
-
-      await updateDoc(userRef, {
-        userPlan: plan.name,
-        subscriptionPlan: plan.name,
-        subscriptionCycle: plan.cycle,
-        subscriptionDays: plan.days,
-        subscriptionActive: true,
-        subscriptionExpiry: newExpiry,
-        customShopUid: assignedUid,
-        razorpayPaymentId: data?.razorpay_payment_id || "",
-        inventoryLimit: limits.inventoryLimit,
-        purchaseLimit: limits.purchaseLimit,
-        reportLimitMonths: limits.reportLimitMonths,
-        lastPaymentDate: Date.now(),
+      // Step 1: Request verified order creation from Firebase Cloud Function
+      const orderResult = await createSubscriptionOrder({
+        plan: plan.name,
+        cycle: plan.cycle,
       });
 
-      // Synchronize local session immediately
+      const { orderId, amount, currency, keyId } = orderResult;
+      if (!orderId || !keyId) {
+        throw new Error("Failed to initialize server-side payment order.");
+      }
+
+      const userEmail = auth.currentUser?.email || userData?.email || "";
+      const userPhone = userData?.phone || userData?.mobile || auth.currentUser?.phoneNumber || "";
+      const shopDisplayName = userData?.shopName || userData?.businessName || "UpstageKadai";
+
+      // Step 2: Open Razorpay Checkout using the returned LIVE Key ID and order ID
+      const options = {
+        description: `${plan.name} (${plan.cycle === "yearly" ? "Yearly" : "Monthly"}) Subscription`,
+        currency: currency || "INR",
+        key: keyId,
+        order_id: orderId,
+        amount: amount || Math.round(Number(plan.price) * 100),
+        name: shopDisplayName,
+        prefill: {
+          email: userEmail,
+          contact: userPhone,
+          name: userData?.ownerName || shopDisplayName,
+        },
+        theme: {
+          color: plan.color,
+        },
+      };
+
+      const checkoutData = await RazorpayCheckout.open(options);
+
+      // Step 3: Receive payment ID and signature
+      const paymentId = checkoutData?.razorpay_payment_id;
+      const returnedOrderId = checkoutData?.razorpay_order_id || orderId;
+      const signature = checkoutData?.razorpay_signature;
+
+      if (!paymentId || !signature) {
+        throw new Error("Payment gateway did not return valid verification details.");
+      }
+
+      // Step 4: Send details to backend for cryptographic HMAC-SHA256 signature verification & direct Razorpay API validation
+      const verifyResult = await verifySubscriptionPayment({
+        orderId: returnedOrderId,
+        paymentId,
+        signature,
+      });
+
+      if (!verifyResult || !verifyResult.success || verifyResult.status !== "ACTIVATED") {
+        throw new Error("Server payment verification could not confirm activation.");
+      }
+
+      // Step 5: Refresh Firestore user subscription data
+      const userRef = doc(db, "users", uid);
+      const userSnap = await getDoc(userRef);
+      const freshUserData = userSnap.exists() ? userSnap.data() : {};
+      const assignedUid = freshUserData.customShopUid || uid;
+      const activeExpiry = freshUserData.subscriptionExpiry || verifyResult.expiry;
+
+      // Step 6: Synchronize local AsyncStorage session
       const existingSession = await getSession();
       if (existingSession) {
         await saveSession({
@@ -346,10 +353,11 @@ export default function SubscriptionScreen({ navigation }) {
           userPlan: plan.name,
           subscriptionPlan: plan.name,
           subscriptionActive: true,
-          subscriptionExpiry: newExpiry,
+          subscriptionExpiry: activeExpiry,
         });
       }
 
+      // Step 7: Show verified payment success notice and navigate
       Alert.alert(
         "Payment Success ✅", 
         `${plan.name} (${plan.cycle === "yearly" ? "Yearly" : "Monthly"}) Activated Successfully!\nShop UID: ${assignedUid}`
@@ -357,7 +365,7 @@ export default function SubscriptionScreen({ navigation }) {
 
       setCurrentPlan(plan.name);
       setUserSubscriptionCycle(plan.cycle);
-      setSubscriptionExpiry(newExpiry);
+      setSubscriptionExpiry(activeExpiry);
       navigation.replace("Dashboard");
     } catch (error) {
       console.log("Razorpay Checkout Error:", error);

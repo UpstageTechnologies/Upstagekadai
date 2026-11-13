@@ -12,7 +12,9 @@ class ScanBeepModule(
 
     private val soundPool: SoundPool
     private var beepSoundId: Int = 0
-    private var isLoaded = false
+    private var successSoundId: Int = 0
+    private var isBeepLoaded = false
+    private var isSuccessLoaded = false
 
     init {
         val audioAttributes = AudioAttributes.Builder()
@@ -21,34 +23,42 @@ class ScanBeepModule(
             .build()
 
         soundPool = SoundPool.Builder()
-            .setMaxStreams(1)
+            .setMaxStreams(3)
             .setAudioAttributes(audioAttributes)
             .build()
 
         soundPool.setOnLoadCompleteListener { _, sampleId, status ->
-            if (status == 0 && sampleId == beepSoundId) {
-                isLoaded = true
+            if (status == 0) {
+                if (sampleId == beepSoundId) {
+                    isBeepLoaded = true
+                } else if (sampleId == successSoundId) {
+                    isSuccessLoaded = true
+                }
             }
         }
 
-        val resourceId = reactContext.resources.getIdentifier(
+        val beepResId = reactContext.resources.getIdentifier(
             "pos_scan_beep",
             "raw",
             reactContext.packageName
         )
+        if (beepResId != 0) {
+            beepSoundId = soundPool.load(reactContext, beepResId, 1)
+        }
 
-        if (resourceId != 0) {
-            beepSoundId = soundPool.load(
-                reactContext,
-                resourceId,
-                1
-            )
+        val successResId = reactContext.resources.getIdentifier(
+            "pos_payment_success",
+            "raw",
+            reactContext.packageName
+        )
+        if (successResId != 0) {
+            successSoundId = soundPool.load(reactContext, successResId, 1)
         }
     }
 
     @ReactMethod
     fun beep() {
-        if (!isLoaded || beepSoundId == 0) {
+        if (!isBeepLoaded || beepSoundId == 0) {
             return
         }
 
@@ -57,6 +67,22 @@ class ScanBeepModule(
             1.0f,
             1.0f,
             1,
+            0,
+            1.0f
+        )
+    }
+
+    @ReactMethod
+    fun playPaymentSuccess() {
+        if (!isSuccessLoaded || successSoundId == 0) {
+            return
+        }
+
+        soundPool.play(
+            successSoundId,
+            1.0f,
+            1.0f,
+            2,
             0,
             1.0f
         )

@@ -418,17 +418,65 @@ useEffect(() => {
   // Assign Order to Delivery Boy & Send task to Delivery App
   const handleAssignDelivery = async () => {
     if (!orderToDeliver || !uid) return;
-    const staffName = selectedDeliveryStaff?.name || customDeliveryBoyName.trim();
-    const staffPhone = selectedDeliveryStaff?.mobile || customDeliveryBoyPhone.trim();
-    const staffId = selectedDeliveryStaff?.staffId || selectedDeliveryStaff?.id || `DEL-${Date.now().toString().slice(-4)}`;
 
-    if (!staffName) {
+    let finalStaffName = selectedDeliveryStaff?.name || customDeliveryBoyName.trim();
+    let finalStaffPhone = selectedDeliveryStaff?.mobile || customDeliveryBoyPhone.trim();
+    let finalStaffId = selectedDeliveryStaff?.staffId || selectedDeliveryStaff?.id || "";
+
+    if (!finalStaffName) {
       Alert.alert("Missing Delivery Boy", "Please select or enter the Delivery Boy's name.");
       return;
     }
 
     setAssigningLoading(true);
+
     try {
+      // If custom delivery boy entered, match existing staff or auto-register to ensure login capability
+      if (!selectedDeliveryStaff && finalStaffPhone) {
+        const cleanCustomPhone = finalStaffPhone.replace(/\D/g, "");
+        const existingStaff = deliveryStaffList.find(
+          (s) => (s.mobile || "").replace(/\D/g, "") === cleanCustomPhone
+        );
+
+        if (existingStaff) {
+          finalStaffId = existingStaff.staffId || existingStaff.id;
+          finalStaffName = existingStaff.name || finalStaffName;
+        } else {
+          const currentYear = new Date().getFullYear();
+          finalStaffId = `${currentYear}DEL${Date.now().toString().slice(-4)}`;
+          const autoPass = cleanCustomPhone.length >= 6 ? cleanCustomPhone.slice(-6) : "del12345";
+          const newStaffPayload = {
+            staffId: finalStaffId,
+            name: finalStaffName,
+            mobile: finalStaffPhone,
+            password: autoPass,
+            role: "delivery",
+            masterUid: uid,
+            createdAt: serverTimestamp(),
+          };
+
+          try {
+            await setDoc(doc(db, "users", uid, "staffs", finalStaffId), newStaffPayload);
+            await setDoc(doc(db, "staffs", finalStaffId), newStaffPayload);
+            console.log(`✅ [Dispatch] Registered delivery staff: ${finalStaffId} (${finalStaffName})`);
+          } catch (regErr) {
+            console.warn("⚠️ [Dispatch] Staff auto-registration notice:", regErr?.message);
+          }
+        }
+      }
+
+      if (!finalStaffId) {
+        finalStaffId = `DEL-${Date.now().toString().slice(-4)}`;
+      }
+
+      console.log("🛵 [Dispatch] Assigning order:", {
+        orderId: orderToDeliver.orderId || orderToDeliver.id,
+        sellerUid: uid,
+        staffId: finalStaffId,
+        staffName: finalStaffName,
+        mode: currentAppMode,
+      });
+
       let displayItems = asArray(orderToDeliver.items);
       if (!displayItems.length && Array.isArray(orderToDeliver.orderedShops)) {
         const myShop = orderToDeliver.orderedShops.find((s) => s?.shopId === uid);
@@ -441,24 +489,34 @@ useEffect(() => {
         displayItems.reduce((sum, p) => sum + (Number(p?.price) || 0) * (Number(p?.qty) || 1), 0)
       ) || 0;
 
+      const customerId = asText(
+        orderToDeliver.customerUid ||
+        orderToDeliver.customerId ||
+        orderToDeliver.userId ||
+        ""
+      );
+
       const deliveryTask = {
         id: String(orderToDeliver.id),
         orderId: String(orderToDeliver.orderId || orderToDeliver.id),
         orderDocId: String(orderToDeliver.id),
         shopId: uid,
-        shopName: shopProfile.name,
-        shopAddress: shopProfile.address,
-        shopPhone: shopProfile.phone,
+        shopName: shopProfile.name || "My Store",
+        shopAddress: shopProfile.address || "",
+        shopPhone: shopProfile.phone || "",
         customerName: asText(orderToDeliver.customerName || "Customer"),
         customerPhone: asText(orderToDeliver.customerPhone || ""),
+        customerUid: customerId,
         deliveryAddress: asText(orderToDeliver.deliveryAddress || "Address not provided"),
         items: displayItems,
         totalAmount: orderTotal,
         paymentMode: orderToDeliver.paymentMode || "COD",
-        assignedStaffId: staffId,
-        assignedStaffName: staffName,
-        assignedStaffPhone: staffPhone,
-        status: "assigned", // assigned -> out_for_delivery -> delivered
+        assignedStaffId: finalStaffId,
+        assignedStaffName: finalStaffName,
+        assignedStaffPhone: finalStaffPhone,
+        assignedDeliveryAuthUid: selectedDeliveryStaff?.authUid || "",
+        status: "assigned", // assigned -> accepted -> out_for_delivery -> delivered
+        orderMode: currentAppMode || "local",
         assignedAt: serverTimestamp(),
         createdAt: orderToDeliver.createdAt || serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -466,46 +524,75 @@ useEffect(() => {
 
       // 1. Write task into global `delivery_orders` (listened to by Delivery App)
       await setDoc(doc(db, "delivery_orders", String(orderToDeliver.id)), deliveryTask, { merge: true });
-      // 2. Also keep a copy under shop's delivery_orders
+
+      // 2. Write copy under shop's delivery_orders
       await setDoc(doc(db, "users", uid, "delivery_orders", String(orderToDeliver.id)), deliveryTask, { merge: true });
 
-      // 3. Update order in POS shop collection
+      // 3. Update order in POS shop collection (local_orders or global_orders)
       const subCol = getSubCol(currentAppMode);
       const posUpdate = {
         status: "Out For Delivery",
         deliveryStatus: "assigned",
-        assignedDeliveryBoyId: staffId,
-        assignedDeliveryBoyName: staffName,
-        assignedDeliveryBoyPhone: staffPhone,
+        assignedDeliveryBoyId: finalStaffId,
+        assignedDeliveryBoyName: finalStaffName,
+        assignedDeliveryBoyPhone: finalStaffPhone,
+        dispatchedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       };
+
       try {
-        await updateDoc(doc(db, "users", uid, subCol, orderToDeliver.id), posUpdate);
-      } catch {
-        await updateDoc(doc(db, "users", uid, "orders", orderToDeliver.id), posUpdate);
+        await updateDoc(doc(db, "users", uid, subCol, String(orderToDeliver.id)), posUpdate);
+      } catch (colErr) {
+        console.warn(`Fallback write from ${subCol} to orders:`, colErr?.message);
+        await updateDoc(doc(db, "users", uid, "orders", String(orderToDeliver.id)), posUpdate);
       }
 
-      // 4. Update customer's order
-      if (orderToDeliver.customerUid) {
+      // 4. Update customer's order if customerUid is available
+      if (customerId) {
         try {
-          const custRef = doc(db, "customers", orderToDeliver.customerUid, "orders", orderToDeliver.id);
+          const custRef = doc(db, "customers", customerId, "orders", String(orderToDeliver.id));
           await updateDoc(custRef, {
             status: "Out For Delivery",
-            deliveryBoyName: staffName,
-            deliveryBoyPhone: staffPhone,
+            deliveryStatus: "assigned",
+            deliveryBoyName: finalStaffName,
+            deliveryBoyPhone: finalStaffPhone,
+            updatedAt: serverTimestamp(),
           });
-        } catch (e) {
-          console.log("Error updating customer order:", e);
+        } catch (custErr) {
+          console.log("Customer order update notice:", custErr?.message);
         }
       }
+
+      console.log("✅ [Dispatch Success] Order dispatched successfully to Delivery App:", {
+        orderId: orderToDeliver.orderId || orderToDeliver.id,
+        staffId: finalStaffId,
+        targetGlobalDoc: `delivery_orders/${orderToDeliver.id}`,
+      });
 
       setAssignDeliveryModal(false);
       Alert.alert(
         "Order Dispatched 🛵",
-        `Order #${orderToDeliver.orderId || orderToDeliver.id} assigned to ${staffName}. Details sent to Delivery App!`
+        `Order #${orderToDeliver.orderId || orderToDeliver.id} assigned to ${finalStaffName}. Details sent to Delivery App!`
       );
     } catch (e) {
-      console.log("Error assigning delivery:", e);
-      Alert.alert("Error", "Failed to assign delivery: " + e.message);
+      console.error("❌ [handleAssignDelivery Error]:", {
+        orderId: orderToDeliver?.orderId || orderToDeliver?.id,
+        sellerUid: uid,
+        selectedStaffId: finalStaffId,
+        targetPath: `delivery_orders/${orderToDeliver?.id}`,
+        errorCode: e?.code,
+        errorMessage: e?.message,
+      });
+
+      let userMsg = "Failed to assign delivery. Please try again.";
+      if (e?.code === "permission-denied") {
+        userMsg = "Permission Denied: Your account is not authorized to dispatch to delivery orders.";
+      } else if (e?.code === "unavailable" || (e?.message && e.message.toLowerCase().includes("network"))) {
+        userMsg = "Network connection failed. Please check your internet connection.";
+      } else if (e?.message) {
+        userMsg = e.message;
+      }
+      Alert.alert("Dispatch Error", userMsg);
     } finally {
       setAssigningLoading(false);
     }
@@ -793,12 +880,23 @@ useEffect(() => {
 
         {/* Assigned Delivery Boy Badge (if assigned) */}
         {item.assignedDeliveryBoyName && (
-          <View style={[styles.assignedDeliveryBadge, { backgroundColor: darkMode ? "#064e3b" : "#ecfdf5", borderColor: "#10b981" }]}>
+          <View style={[styles.assignedDeliveryBadge, { 
+            backgroundColor: item.deliveryStatus === "rejected" ? (darkMode ? "#450a0a" : "#fef2f2") : (darkMode ? "#064e3b" : "#ecfdf5"), 
+            borderColor: item.deliveryStatus === "rejected" ? "#ef4444" : "#10b981" 
+          }]}>
             <View style={{ flexDirection: "row", alignItems: "center", flex: 1 }}>
-              <Icon name="moped" size={18} color="#16a34a" style={{ marginRight: 6 }} />
+              <Icon 
+                name={item.deliveryStatus === "rejected" ? "alert-circle" : "moped"} 
+                size={18} 
+                color={item.deliveryStatus === "rejected" ? "#ef4444" : "#16a34a"} 
+                style={{ marginRight: 6 }} 
+              />
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 12, fontWeight: "800", color: "#16a34a" }}>
-                  Delivery Boy: {item.assignedDeliveryBoyName}
+                <Text style={{ fontSize: 12, fontWeight: "800", color: item.deliveryStatus === "rejected" ? "#ef4444" : "#16a34a" }}>
+                  {item.deliveryStatus === "rejected" 
+                    ? `Rejected by: ${item.assignedDeliveryBoyName}` 
+                    : `Delivery Boy: ${item.assignedDeliveryBoyName}`}
+                  {item.deliveryStatus === "accepted" ? " (Accepted)" : item.deliveryStatus === "assigned" ? " (Dispatched)" : ""}
                 </Text>
                 {item.assignedDeliveryBoyPhone ? (
                   <Text style={{ fontSize: 11, color: "#64748b" }}>
@@ -810,7 +908,7 @@ useEffect(() => {
             {item.assignedDeliveryBoyPhone ? (
               <TouchableOpacity
                 onPress={() => Linking.openURL(`tel:${item.assignedDeliveryBoyPhone}`)}
-                style={{ backgroundColor: "#16a34a", padding: 6, borderRadius: 8, marginLeft: 6 }}
+                style={{ backgroundColor: item.deliveryStatus === "rejected" ? "#ef4444" : "#16a34a", padding: 6, borderRadius: 8, marginLeft: 6 }}
               >
                 <Icon name="phone" size={14} color="#fff" />
               </TouchableOpacity>
@@ -830,9 +928,9 @@ useEffect(() => {
           ) : (
             <>
               {/* DOOR DELIVERY ON: Assign to Delivery Boy button */}
-              {doorDeliveryEnabled && ["Accepted", "Packed"].includes(item.status) && (
+              {doorDeliveryEnabled && (["Accepted", "Packed"].includes(item.status) || item.deliveryStatus === "rejected") && (
                 <TouchableOpacity
-                  style={[styles.mainActionBtn, { backgroundColor: "#16a34a" }]}
+                  style={[styles.mainActionBtn, { backgroundColor: item.deliveryStatus === "rejected" ? "#ea580c" : "#16a34a" }]}
                   onPress={() => {
                     setOrderToDeliver(item);
                     setSelectedDeliveryStaff(deliveryStaffList[0] || null);
@@ -842,7 +940,9 @@ useEffect(() => {
                   }}
                 >
                   <Icon name="moped" size={16} color="#fff" style={{ marginRight: 4 }} />
-                  <Text style={styles.btnText}>Assign Delivery Boy</Text>
+                  <Text style={styles.btnText}>
+                    {item.deliveryStatus === "rejected" ? "Reassign Delivery Boy" : "Assign Delivery Boy"}
+                  </Text>
                 </TouchableOpacity>
               )}
 

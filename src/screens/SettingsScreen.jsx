@@ -51,6 +51,7 @@ export default function SettingsScreen({ navigation }) {
   const [upiId, setUpiId] = useState("");
   const [razorpayKeyId, setRazorpayKeyId] = useState(""); 
   const [razorpaySecret, setRazorpaySecret] = useState(""); 
+  const [razorpayWebhookSecret, setRazorpayWebhookSecret] = useState(""); 
   const [qrCodeUri, setQrCodeUri] = useState(null);
   const [qrMode, setQrMode] = useState("generated");
   const [showPickerModal, setShowPickerModal] = useState(false);
@@ -430,6 +431,7 @@ export default function SettingsScreen({ navigation }) {
           setUpiId(data.upiId || "");
           setRazorpayKeyId(data.razorpayKeyId || ""); 
           setRazorpaySecret(data.razorpaySecret || ""); 
+          setRazorpayWebhookSecret(data.razorpayWebhookSecret || ""); 
           setQrMode(data.qrMode || "generated");
           
           setCashEnabled(data.cashEnabled ?? true);
@@ -513,6 +515,7 @@ export default function SettingsScreen({ navigation }) {
         upiId: upiId.trim(),
         razorpayKeyId: razorpayKeyId.trim(), 
         razorpaySecret: razorpaySecret.trim(),
+        razorpayWebhookSecret: razorpayWebhookSecret.trim(),
         qrMode: qrMode,
         cashEnabled,
         cashDisplayName: cashDisplayName.trim(),
@@ -1189,10 +1192,19 @@ export default function SettingsScreen({ navigation }) {
                   </View>
 
                   <Text style={[styles.inputLabel, { color: theme.text }]}>Secret Key</Text>
-                  <View style={[styles.fieldWrapper, { backgroundColor: theme.card }]}>
+                  <View style={[styles.fieldWrapper, { marginBottom: 12, backgroundColor: theme.card }]}>
                     <Icon name="lock-outline" size={20} color="#64748b" style={styles.fieldIcon} />
                     <TextInput editable={razorpayEnabled} placeholder="Enter Razorpay Secret Key" placeholderTextColor="#94a3b8" secureTextEntry autoCapitalize="none" value={razorpaySecret} onChangeText={setRazorpaySecret} style={[styles.textInput, { color: theme.text }]} />
                   </View>
+
+                  <Text style={[styles.inputLabel, { color: theme.text }]}>Webhook Secret (Automatic UPI Verification)</Text>
+                  <View style={[styles.fieldWrapper, { backgroundColor: theme.card }]}>
+                    <Icon name="webhook" size={20} color="#64748b" style={styles.fieldIcon} />
+                    <TextInput editable={razorpayEnabled} placeholder="Enter Webhook Secret (or reuse Secret Key)" placeholderTextColor="#94a3b8" secureTextEntry autoCapitalize="none" value={razorpayWebhookSecret} onChangeText={setRazorpayWebhookSecret} style={[styles.textInput, { color: theme.text }]} />
+                  </View>
+                  <Text style={{ fontSize: 11, color: "#64748b", marginTop: 4, lineHeight: 16 }}>
+                    Webhook URL: https://us-central1-scaner-billing.cloudfunctions.net/razorpayWebhook
+                  </Text>
                 </View>
 
                 <TouchableOpacity disabled={!razorpayEnabled} style={styles.setAsDefaultBtn} onPress={() => setDefaultPayment("razorpay")}>

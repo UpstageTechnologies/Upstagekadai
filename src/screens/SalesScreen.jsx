@@ -4,13 +4,14 @@ import { useTheme } from "../theme/ThemeContext";
 import bluetoothPrinter from "../utils/bluetoothPrinter";
 import RNPrint from "react-native-print";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, Modal, Image, SafeAreaView, StatusBar, Platform, Keyboard, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, Modal, Image, SafeAreaView, StatusBar, Platform, Keyboard, useWindowDimensions, Animated, ActivityIndicator } from "react-native";
 import { NativeModules } from "react-native";
 import { Camera, useCameraDevice, useCodeScanner, useCameraPermission } from "react-native-vision-camera";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { WebView } from "react-native-webview";
 import DropDownPicker from 'react-native-dropdown-picker';
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
+import { SvgUri } from "react-native-svg";
 
 import { auth, db } from "../utils/firebaseConfig";
 import { onAuthStateChanged } from "firebase/auth";
@@ -20,6 +21,9 @@ import QRCode from "react-native-qrcode-svg";
 import RestaurantSalesBilling from "./restaurant/RestaurantSalesBilling";
 import { fetchAndCacheShopType, getCachedShopType, isRestaurantShop } from "../utils/restaurantMode";
 import { matchProductSearch } from "../services/hsnService";
+import upiPaymentService from "../services/upiPaymentService";
+import upiAutoDetectService from "../services/upiAutoDetectService";
+import paymentSound from "../utils/paymentSound";
 
 function RetailSalesScreen({ navigation, route }) {
   const { width, height } = useWindowDimensions();
@@ -58,6 +62,25 @@ function RetailSalesScreen({ navigation, route }) {
   const [showHoldSuccess, setShowHoldSuccess] = useState(false);
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
   const [showScanToast, setShowScanToast] = useState(false);
+
+  // 🚀 AUTOMATIC UPI PAYMENT STATES
+  const [upiStatus, setUpiStatus] = useState("IDLE"); // IDLE, CREATED, WAITING_FOR_PAYMENT, PROCESSING, SUCCESS, FAILED, EXPIRED, CANCELLED
+  const [upiSessionId, setUpiSessionId] = useState(null);
+  const [upiQrImageUrl, setUpiQrImageUrl] = useState(null);
+  const [upiQrCodeId, setUpiQrCodeId] = useState(null);
+  const [upiTransactionData, setUpiTransactionData] = useState(null);
+  const [upiErrorMessage, setUpiErrorMessage] = useState("");
+  const [upiLoading, setUpiLoading] = useState(false);
+  const [upiQrImageLoading, setUpiQrImageLoading] = useState(true);
+  const [upiTimeRemaining, setUpiTimeRemaining] = useState("15:00");
+  const [upiPaymentType, setUpiPaymentType] = useState("DIRECT"); // "RAZORPAY" | "DIRECT"
+  const [hasNotificationAccess, setHasNotificationAccess] = useState(true);
+
+  const checkmarkScaleAnim = useRef(new Animated.Value(0)).current;
+  const pulseRadarAnim = useRef(new Animated.Value(1)).current;
+  const isFinalizingOrderRef = useRef(false);
+  const unsubUpiListenerRef = useRef(null);
+  const countdownIntervalRef = useRef(null);
 
   // Settings Enabled Statuses for Buttons Gray-out Logic
   const [cashEnabled, setCashEnabled] = useState(true);
@@ -414,13 +437,302 @@ function RetailSalesScreen({ navigation, route }) {
     };
   }, []);
 
-  const triggerUpiSuccessAnimation = () => {
-    setShowUpiModal(false);
-    setShowSuccessOverlay(true);
+  // 💫 UPI ANIMATIONS
+  useEffect(() => {
+    let pulseLoop = null;
+    if (upiStatus === "WAITING_FOR_PAYMENT" || upiStatus === "PROCESSING") {
+      pulseRadarAnim.setValue(1);
+      pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseRadarAnim, {
+            toValue: 1.06,
+            duration: 850,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseRadarAnim, {
+            toValue: 1.0,
+            duration: 850,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoop.start();
+    }
+    return () => {
+      if (pulseLoop) pulseLoop.stop();
+    };
+  }, [upiStatus]);
+
+  useEffect(() => {
+    if (upiStatus === "SUCCESS") {
+      checkmarkScaleAnim.setValue(0);
+      Animated.spring(checkmarkScaleAnim, {
+        toValue: 1,
+        friction: 4,
+        tension: 60,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [upiStatus]);
+
+  // Cleanup on screen unmount
+  useEffect(() => {
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+      if (unsubUpiListenerRef.current) {
+        unsubUpiListenerRef.current();
+      }
+    };
+  }, []);
+
+  const initiateUpiPayment = async () => {
+    const user = auth?.currentUser;
+    if (!user) {
+      Alert.alert("Authentication Required", "Please log in to initiate payment.");
+      return;
+    }
+
+    if (total <= 0) {
+      Alert.alert("Invalid Amount", "Bill total must be greater than zero.");
+      return;
+    }
+
+    // Determine Payment Mode:
+    // If razorpayEnabled is active AND seller has entered razorpayKeyId -> Automatic Razorpay Dynamic QR
+    // Otherwise -> Direct Merchant UPI QR Mode
+    const hasRazorpayConfig = Boolean(razorpayEnabled && userRazorpayKeyId && userRazorpayKeyId.trim().length > 0);
+
+    if (hasRazorpayConfig) {
+      // 🚀 MODE A: AUTOMATIC RAZORPAY DYNAMIC QR
+      setUpiPaymentType("RAZORPAY");
+      setPaymentMode("UPI");
+      setShowUpiModal(true);
+      setUpiStatus("CREATED");
+      setUpiErrorMessage("");
+      setUpiLoading(true);
+      setUpiQrImageLoading(true);
+      setUpiQrImageUrl(null);
+      setUpiTransactionData(null);
+      setUpiTimeRemaining("15:00");
+
+      if (unsubUpiListenerRef.current) {
+        unsubUpiListenerRef.current();
+        unsubUpiListenerRef.current = null;
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+
+      try {
+        const result = await upiPaymentService.createUpiPaymentSession({
+          sellerUid: user.uid,
+          amount: total,
+          shopName: shopName || "Shop POS",
+        });
+
+        setUpiSessionId(result.sessionId);
+        setUpiQrImageUrl(result.qrImageUrl);
+        setUpiQrCodeId(result.qrCodeId);
+        setUpiStatus("WAITING_FOR_PAYMENT");
+        setUpiLoading(false);
+
+        // Start countdown timer
+        const expiresAtMs = result.expiresAt ? new Date(result.expiresAt).getTime() : (Date.now() + 15 * 60 * 1000);
+        countdownIntervalRef.current = setInterval(() => {
+          const remainingMs = expiresAtMs - Date.now();
+          if (remainingMs <= 0) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+            setUpiStatus("EXPIRED");
+          } else {
+            const mins = Math.floor(remainingMs / 60000);
+            const secs = Math.floor((remainingMs % 60000) / 1000);
+            setUpiTimeRemaining(`${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`);
+          }
+        }, 1000);
+
+        // Realtime listener for webhook updates
+        unsubUpiListenerRef.current = upiPaymentService.listenToPaymentSession(
+          user.uid,
+          result.sessionId,
+          (sessionData) => {
+            handleUpiSessionUpdate(sessionData, result.sessionId, result.qrCodeId);
+          },
+          (listenerErr) => {
+            console.warn("[SalesScreen] UPI session listener error:", listenerErr);
+          }
+        );
+
+      } catch (err) {
+        console.error("[SalesScreen] UPI QR Generation Error:", err);
+        setUpiLoading(false);
+        setUpiStatus("FAILED");
+        setUpiErrorMessage(err.message || "Failed to generate dynamic UPI QR. Please try again.");
+      }
+    } else {
+      // 📱 MODE B: DIRECT MERCHANT UPI QR MODE
+      // Check if merchant has shopUpiId or savedSettingsQr configured
+      const hasUpiConfig = Boolean(
+        (shopUpiId && shopUpiId.trim().length > 0) ||
+        (savedSettingsQr && savedSettingsQr.length > 0)
+      );
+
+      if (!hasUpiConfig) {
+        Alert.alert(
+          "UPI Details Missing",
+          "Please configure your Shop UPI ID (e.g. yourname@okaxis) or upload a custom QR in Settings > Payment Methods.",
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Open Settings", onPress: () => navigation.navigate("Settings") }
+          ]
+        );
+        return;
+      }
+
+      if (unsubUpiListenerRef.current) {
+        unsubUpiListenerRef.current();
+        unsubUpiListenerRef.current = null;
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+
+      setUpiPaymentType("DIRECT");
+      setPaymentMode("UPI");
+      setShowUpiModal(true);
+      setUpiStatus("WAITING_FOR_PAYMENT");
+      setUpiErrorMessage("");
+      setUpiLoading(false);
+      setUpiQrImageLoading(false);
+      setUpiQrImageUrl(null);
+      setUpiTransactionData(null);
+
+      // Check notification access on Android
+      upiAutoDetectService.isAccessGranted().then((granted) => {
+        setHasNotificationAccess(granted);
+      });
+
+      // ⚡ Start Automatic UPI Payment Detection (PhonePe, Google Pay, Paytm, BHIM, Bank SMS)
+      upiAutoDetectService.startListening(total, user.uid, (paymentData) => {
+        handleDirectUpiAutoSuccess(paymentData);
+      });
+    }
+  };
+
+  const handleDirectUpiAutoSuccess = async (paymentData) => {
+    if (upiStatus === "SUCCESS" || isFinalizingOrderRef.current) return;
+
+    setUpiStatus("SUCCESS");
+    const directRef = paymentData?.transactionReference || ("UPI-AUTO-" + Date.now().toString().slice(-8));
+    const transactionData = {
+      paymentProvider: "DIRECT_UPI",
+      detectedBy: paymentData?.detectedBy || "Automatic UPI Notification",
+      transactionReference: directRef,
+      upiId: shopUpiId || "",
+      amount: paymentData?.amount || total,
+      sender: paymentData?.sender || "",
+      paidAt: paymentData?.paidAt || new Date().toISOString(),
+    };
+    setUpiTransactionData(transactionData);
+
+    // 🔊 Play verified native payment success chime
+    paymentSound.playPaymentSuccessSound(directRef);
+
+    // Smooth checkmark scale animation
+    checkmarkScaleAnim.setValue(0);
+    Animated.spring(checkmarkScaleAnim, {
+      toValue: 1,
+      tension: 60,
+      friction: 6,
+      useNativeDriver: true,
+    }).start();
+
+    // Automatically finalize sale and transition to receipt modal
     setTimeout(async () => {
-      setShowSuccessOverlay(false);
-      await finalizeOrder("UPI_AUTOMATIC_SUCCESS");
+      setShowUpiModal(false);
+      setUpiStatus("IDLE");
+      await finalizeOrder("UPI", transactionData);
     }, 2000);
+  };
+
+  const handleUpiSessionUpdate = async (sessionData, sessionId, qrCodeId) => {
+    if (!sessionData) return;
+
+    if (sessionData.status === "PROCESSING") {
+      setUpiStatus("PROCESSING");
+    } else if (sessionData.status === "FAILED") {
+      setUpiStatus("FAILED");
+      setUpiErrorMessage(sessionData.failureReason || "Payment verification failed.");
+    } else if (sessionData.status === "EXPIRED") {
+      setUpiStatus("EXPIRED");
+    } else if (sessionData.status === "SUCCESS") {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+
+      setUpiStatus("SUCCESS");
+      setUpiTransactionData(sessionData);
+
+      // 🔊 Play verified payment success chime once
+      const paymentRef = sessionData.paymentId || sessionData.transactionReference || sessionId;
+      paymentSound.playPaymentSuccessSound(paymentRef);
+
+      // Automatically finalize sale and transition to receipt
+      setTimeout(async () => {
+        if (unsubUpiListenerRef.current) {
+          unsubUpiListenerRef.current();
+          unsubUpiListenerRef.current = null;
+        }
+        setShowUpiModal(false);
+        await finalizeOrder("UPI", {
+          ...sessionData,
+          sessionId,
+          qrCodeId,
+        });
+      }, 2200);
+    }
+  };
+
+  const handleCancelUpiModal = async () => {
+    upiAutoDetectService.stopListening();
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    if (unsubUpiListenerRef.current) {
+      unsubUpiListenerRef.current();
+      unsubUpiListenerRef.current = null;
+    }
+    if (upiSessionId && auth?.currentUser?.uid && upiStatus === "WAITING_FOR_PAYMENT") {
+      upiPaymentService.cancelUpiPaymentSession(auth.currentUser.uid, upiSessionId).catch(() => {});
+    }
+    setShowUpiModal(false);
+    setUpiStatus("IDLE");
+    focusGunScanner();
+  };
+
+  const handleManualStatusCheck = async () => {
+    if (!upiSessionId || !auth?.currentUser?.uid) return;
+    setUpiLoading(true);
+    try {
+      const res = await upiPaymentService.checkUpiPaymentStatus(auth.currentUser.uid, upiSessionId);
+      if (res && res.status === "SUCCESS") {
+        handleUpiSessionUpdate(res, upiSessionId, upiQrCodeId);
+      } else if (res && res.status === "EXPIRED") {
+        setUpiStatus("EXPIRED");
+      } else {
+        Alert.alert("Payment Status", "Waiting for payment. Please ensure customer has completed payment in their UPI app.");
+      }
+    } catch (err) {
+      Alert.alert("Status Check", err.message || "Could not check status right now. Listening for webhook...");
+    } finally {
+      setUpiLoading(false);
+    }
   };
 
   const handleRazorpayPayment = () => {
@@ -460,7 +772,13 @@ function RetailSalesScreen({ navigation, route }) {
     });
   };
 
-  const finalizeOrder = async (payId = "CASH_OR_OTHER") => {
+  const finalizeOrder = async (payId = "CASH_OR_OTHER", paymentDetails = null) => {
+    if (isFinalizingOrderRef.current) {
+      console.log("[finalizeOrder] Order already finalizing, preventing duplicate execution.");
+      return;
+    }
+    isFinalizingOrderRef.current = true;
+
     try {
       const user = auth?.currentUser;
       if (!user) return;
@@ -486,18 +804,47 @@ function RetailSalesScreen({ navigation, route }) {
       const finalOrderTotal = subtotal + taxTotal;
       const totalProfit = bill.reduce((sum, i) => sum + (Number(i.salesPrice || i.price || 0) - Number(i.purchasePrice || 0)) * i.qty, 0);
 
-      await addDoc(collection(db, "users", user.uid, "sales"), {
+      const saleRecord = {
         billNo: bNo,
         invoiceId: bNo,
         billDate: bDate,
         items: bill,
         total: finalOrderTotal,
         profit: totalProfit,
-        paymentMode,
-        razorpayPaymentId: payId,
+        paymentMode: paymentMode || "CASH",
         isGlobalMode: currentMode === "global",
         createdAt: serverTimestamp()
-      });
+      };
+
+      if (paymentMode === "UPI" && paymentDetails) {
+        saleRecord.paymentStatus = "SUCCESS";
+        saleRecord.paymentProvider = paymentDetails.paymentProvider || "RAZORPAY";
+        saleRecord.paymentId = paymentDetails.paymentId || payId;
+        saleRecord.orderId = paymentDetails.sessionId || paymentDetails.orderId || "";
+        saleRecord.qrCodeId = paymentDetails.qrCodeId || "";
+        saleRecord.transactionReference = paymentDetails.transactionReference || paymentDetails.paymentId || payId;
+        saleRecord.amount = finalOrderTotal;
+        saleRecord.currency = "INR";
+        saleRecord.verifiedAt = serverTimestamp();
+        if (paymentDetails.upiId) {
+          saleRecord.upiId = paymentDetails.upiId;
+        }
+        if (paymentDetails.vpa || paymentDetails.customerVpa) {
+          saleRecord.customerVpa = paymentDetails.vpa || paymentDetails.customerVpa;
+        }
+      } else if (paymentMode === "RAZORPAY") {
+        saleRecord.paymentStatus = "SUCCESS";
+        saleRecord.paymentProvider = "RAZORPAY";
+        saleRecord.razorpayPaymentId = payId;
+        saleRecord.amount = finalOrderTotal;
+        saleRecord.currency = "INR";
+      } else {
+        saleRecord.paymentStatus = "SUCCESS";
+        saleRecord.paymentProvider = "CASH";
+        saleRecord.razorpayPaymentId = payId;
+      }
+
+      await addDoc(collection(db, "users", user.uid, "sales"), saleRecord);
 
       if (activeResumedOrderId) {
         const updatedOrders = heldOrders.filter(o => o.id !== activeResumedOrderId);
@@ -522,6 +869,8 @@ function RetailSalesScreen({ navigation, route }) {
 
     } catch (err) {
       Alert.alert("Save failed", err.message);
+    } finally {
+      isFinalizingOrderRef.current = false;
     }
   };
 
@@ -1160,7 +1509,7 @@ function RetailSalesScreen({ navigation, route }) {
             <TouchableOpacity
               focusable={false}
               disabled={!upiEnabled}
-              onPress={() => { if (upiEnabled) { setPaymentMode("UPI"); setShowUpiModal(true); } }}
+              onPress={() => { if (upiEnabled) { initiateUpiPayment(); } }}
               style={[styles.payModeBtnStyle, paymentMode === "UPI" && styles.payModeBtnActive, !upiEnabled && styles.payModeBtnDisabled]}
             >
               <Text style={[styles.payModeText, paymentMode === "UPI" && { color: "#fff" }, !upiEnabled && { color: "#9ca3af" }]}>UPI</Text>
@@ -1480,57 +1829,266 @@ function RetailSalesScreen({ navigation, route }) {
         </View>
       </Modal>
 
-      {/* UPI PAYMENT MODAL */}
-      <Modal visible={showUpiModal} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.card, alignItems: "center" }]}>
-            <Text style={[styles.modalTitle, { color: theme.text, textAlign: "center" }]}>Scan & Pay via UPI</Text>
-            <Text style={{ textAlign: "center", color: "#64748b", marginBottom: 10 }}>
-              Amount: ₹{total.toFixed(2)}
-            </Text>
+      {/* PROFESSIONAL AUTOMATIC UPI PAYMENT MODAL */}
+      <Modal visible={showUpiModal} transparent={true} animationType="fade" onRequestClose={handleCancelUpiModal}>
+        <View style={styles.upiModalOverlay}>
+          <View style={[styles.upiModalCard, { backgroundColor: theme.card }]}>
 
-            <View style={{ alignItems: "center", justifyContent: "center", marginVertical: 15, width: "100%" }}>
-              {currentQrMode === "generated" ? (
-                shopUpiId ? (
-                  <QRCode
-                    value={`upi://pay?pa=${shopUpiId}&pn=${encodeURIComponent(shopName)}&am=${total}&cu=INR`}
-                    size={180}
-                  />
-                ) : (
-                  <Text style={{ color: "#ef4444", textAlign: "center", fontWeight: "600" }}>
-                    UPI ID not configured in Settings!
-                  </Text>
-                )
-              ) : (
-                savedSettingsQr ? (
-                  <Image
-                    source={{ uri: savedSettingsQr }}
-                    style={{ width: 180, height: 180, borderRadius: 12 }}
-                    resizeMode="contain"
-                  />
-                ) : (
-                  <Text style={{ color: "#ef4444", textAlign: "center", fontWeight: "600" }}>
-                    Custom QR Image not found in Settings!
-                  </Text>
-                )
-              )}
+            {/* HEADER: Shop Badge & Close */}
+            <View style={styles.upiModalHeader}>
+              <View style={[styles.upiShopBadge, { backgroundColor: darkMode ? "#1e293b" : "#eef2ff" }]}>
+                <Icon name="storefront" size={16} color="#16a34a" />
+                <Text style={[styles.upiShopName, { color: darkMode ? "#f8fafc" : "#4338ca" }]} numberOfLines={1}>
+                  {shopName}
+                </Text>
+              </View>
+
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                {upiPaymentType === "DIRECT" && (
+                  <View style={styles.upiModeTag}>
+                    <Icon name="qrcode-scan" size={12} color="#059669" />
+                    <Text style={styles.upiModeTagText}>Direct UPI</Text>
+                  </View>
+                )}
+                {upiStatus !== "SUCCESS" && (
+                  <TouchableOpacity focusable={false} onPress={handleCancelUpiModal} style={styles.upiCloseBtn}>
+                    <Icon name="close" size={20} color={theme.text} />
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
 
-            <TouchableOpacity
-              focusable={false}
-              style={{ backgroundColor: "#16a34a", padding: 12, borderRadius: 12, alignItems: "center", marginTop: 10, width: "100%" }}
-              onPress={triggerUpiSuccessAnimation}
-            >
-              <Text style={{ color: "#fff", fontWeight: "700" }}>I have received payment ✓</Text>
-            </TouchableOpacity>
+            {/* WAITING / CREATED / PROCESSING STATE */}
+            {(upiStatus === "WAITING_FOR_PAYMENT" || upiStatus === "CREATED" || upiStatus === "PROCESSING") && (
+              <View style={styles.upiBodyContainer}>
+                <Text style={[styles.upiAmountLabel, { color: theme.text }]}>Total Payable Amount</Text>
+                <Text style={styles.upiAmountValue}>₹ {total.toFixed(2)}</Text>
 
-            <TouchableOpacity
-              focusable={false}
-              style={{ alignItems: "center", width: "100%", marginTop: 12 }}
-              onPress={() => { setShowUpiModal(false); focusGunScanner(); }}
-            >
-              <Text style={{ color: "#ef4444", fontWeight: "700" }}>Cancel</Text>
-            </TouchableOpacity>
+                {/* QR Code Container */}
+                <View style={[styles.upiQrBox, { backgroundColor: "#ffffff", borderColor: darkMode ? "#334155" : "#e2e8f0" }]}>
+                  {upiPaymentType === "DIRECT" ? (
+                    currentQrMode === "custom" && savedSettingsQr ? (
+                      <Image
+                        source={{ uri: savedSettingsQr }}
+                        style={{ width: 190, height: 190 }}
+                        resizeMode="contain"
+                      />
+                    ) : shopUpiId ? (
+                      <TouchableOpacity
+                        activeOpacity={0.9}
+                        onLongPress={() => upiAutoDetectService.simulateTestPayment(total, "Google Pay")}
+                        delayLongPress={1200}
+                      >
+                        <QRCode
+                          value={`upi://pay?pa=${shopUpiId}&pn=${encodeURIComponent(shopName)}&am=${total.toFixed(2)}&cu=INR&tn=${encodeURIComponent('Bill Payment')}`}
+                          size={190}
+                        />
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={styles.upiQrLoaderContainer}>
+                        <Icon name="alert-circle-outline" size={36} color="#ef4444" />
+                        <Text style={[styles.upiQrLoaderText, { color: "#ef4444" }]}>UPI ID not configured</Text>
+                      </View>
+                    )
+                  ) : upiLoading || !upiQrImageUrl ? (
+                    <View style={styles.upiQrLoaderContainer}>
+                      <ActivityIndicator size="large" color="#6366f1" />
+                      <Text style={styles.upiQrLoaderText}>Generating Dynamic UPI QR...</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.upiQrImageWrapper}>
+                      {upiQrImageUrl.toLowerCase().includes(".svg") ? (
+                        <SvgUri
+                          width={190}
+                          height={190}
+                          uri={upiQrImageUrl}
+                          onLoad={() => setUpiQrImageLoading(false)}
+                        />
+                      ) : (
+                        <Image
+                          source={{ uri: upiQrImageUrl }}
+                          style={{ width: 190, height: 190 }}
+                          resizeMode="contain"
+                          onLoadEnd={() => setUpiQrImageLoading(false)}
+                        />
+                      )}
+                      {upiQrImageLoading && (
+                        <View style={styles.upiImageSpinnerOverlay}>
+                          <ActivityIndicator size="small" color="#6366f1" />
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </View>
+
+                {/* Shop Merchant UPI ID Badge */}
+                {shopUpiId ? (
+                  <View style={[styles.upiIdBadge, { backgroundColor: darkMode ? "#1e293b" : "#f0fdf4" }]}>
+                    <Icon name="bank-outline" size={14} color="#16a34a" />
+                    <Text style={[styles.upiIdBadgeText, { color: darkMode ? "#94a3b8" : "#475569" }]}>
+                      UPI ID: <Text style={{ fontWeight: "700", color: darkMode ? "#f8fafc" : "#0f172a" }}>{shopUpiId}</Text>
+                    </Text>
+                  </View>
+                ) : null}
+
+                {/* Live Status Indicator */}
+                <Animated.View style={[styles.upiStatusBadge, { transform: [{ scale: pulseRadarAnim }] }]}>
+                  <View style={styles.upiGreenPulseDot} />
+                  <Text style={styles.upiStatusBadgeText}>
+                    {upiPaymentType === "DIRECT"
+                      ? "Awaiting Customer Payment..."
+                      : (upiStatus === "PROCESSING" ? "Verifying Payment..." : "Waiting for payment...")}
+                  </Text>
+                </Animated.View>
+
+                <Text style={styles.upiScanInstruction}>
+                  Scan using Google Pay, PhonePe, Paytm or any UPI App
+                </Text>
+
+                {/* UPI Supported Apps Pills */}
+                <View style={styles.upiAppsRow}>
+                  <View style={styles.upiAppPill}><Text style={styles.upiAppPillText}>Google Pay</Text></View>
+                  <View style={styles.upiAppPill}><Text style={styles.upiAppPillText}>PhonePe</Text></View>
+                  <View style={styles.upiAppPill}><Text style={styles.upiAppPillText}>Paytm</Text></View>
+                  <View style={styles.upiAppPill}><Text style={styles.upiAppPillText}>BHIM</Text></View>
+                </View>
+
+                {/* Direct UPI Mode -> Automatic Confirmation Indicator */}
+                {upiPaymentType === "DIRECT" ? (
+                  <View style={{ width: "100%", alignItems: "center", marginTop: 12 }}>
+                    <View style={[styles.upiAutoListeningBadge, { backgroundColor: darkMode ? "#1e293b" : "#f0fdf4" }]}>
+                      <View style={styles.upiGreenPulseDot} />
+                      <Text style={[styles.upiAutoListeningText, { color: darkMode ? "#86efac" : "#16a34a" }]}>
+                        Auto-detect active • PhonePe, GPay, Paytm & SMS
+                      </Text>
+                    </View>
+
+                    {!hasNotificationAccess && Platform.OS === "android" && (
+                      <TouchableOpacity
+                        focusable={false}
+                        activeOpacity={0.8}
+                        onPress={() => upiAutoDetectService.openAccessSettings()}
+                        style={styles.upiPermissionNotice}
+                      >
+                        <Icon name="bell-ring-outline" size={14} color="#d97706" style={{ marginRight: 6 }} />
+                        <Text style={styles.upiPermissionNoticeText}>
+                          Tap to allow notification access for auto-detection
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    <TouchableOpacity focusable={false} onPress={handleCancelUpiModal} style={styles.upiCancelBtn}>
+                      <Text style={styles.upiCancelBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <>
+                    {/* Timer & Reconcile Row for Razorpay Mode */}
+                    <View style={styles.upiFooterRow}>
+                      <View style={styles.upiTimerContainer}>
+                        <Icon name="clock-outline" size={14} color="#64748b" />
+                        <Text style={styles.upiTimerText}>Expires in: {upiTimeRemaining}</Text>
+                      </View>
+                      <TouchableOpacity focusable={false} onPress={handleManualStatusCheck} style={styles.upiCheckStatusBtn}>
+                        <Icon name="refresh" size={14} color="#6366f1" />
+                        <Text style={styles.upiCheckStatusText}>Check Status</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <TouchableOpacity focusable={false} onPress={handleCancelUpiModal} style={styles.upiCancelBtn}>
+                      <Text style={styles.upiCancelBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            )}
+
+            {/* SUCCESS STATE - WITH ANIMATED GREEN TICK */}
+            {upiStatus === "SUCCESS" && (
+              <View style={styles.upiSuccessContainer}>
+                <Animated.View style={[styles.upiSuccessCheckmarkOuter, { transform: [{ scale: checkmarkScaleAnim }] }]}>
+                  <View style={styles.upiSuccessCheckmarkInner}>
+                    <Icon name="check-bold" size={44} color="#ffffff" />
+                  </View>
+                </Animated.View>
+
+                <Text style={[styles.upiSuccessTitle, { color: theme.text }]}>Payment Received! 🎉</Text>
+                <Text style={styles.upiSuccessSubtitle}>
+                  {upiPaymentType === "DIRECT" ? "Direct Merchant UPI Payment" : "Verified by Razorpay UPI"}
+                </Text>
+
+                <View style={[styles.upiSuccessCard, { backgroundColor: darkMode ? "#1e293b" : "#f1f5f9" }]}>
+                  <View style={styles.upiSuccessDetailRow}>
+                    <Text style={styles.upiSuccessDetailLabel}>Amount Received</Text>
+                    <Text style={styles.upiSuccessDetailAmount}>₹ {total.toFixed(2)}</Text>
+                  </View>
+                  {upiTransactionData?.transactionReference ? (
+                    <View style={styles.upiSuccessDetailRow}>
+                      <Text style={styles.upiSuccessDetailLabel}>Ref / RRN</Text>
+                      <Text style={[styles.upiSuccessDetailValue, { color: theme.text }]}>
+                        {upiTransactionData.transactionReference}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {upiTransactionData?.upiId ? (
+                    <View style={styles.upiSuccessDetailRow}>
+                      <Text style={styles.upiSuccessDetailLabel}>Merchant UPI</Text>
+                      <Text style={[styles.upiSuccessDetailValue, { color: theme.text }]}>
+                        {upiTransactionData.upiId}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {upiTransactionData?.paymentId ? (
+                    <View style={styles.upiSuccessDetailRow}>
+                      <Text style={styles.upiSuccessDetailLabel}>Payment ID</Text>
+                      <Text style={[styles.upiSuccessDetailValue, { color: theme.text }]}>
+                        {upiTransactionData.paymentId}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {upiTransactionData?.vpa ? (
+                    <View style={styles.upiSuccessDetailRow}>
+                      <Text style={styles.upiSuccessDetailLabel}>Customer VPA</Text>
+                      <Text style={[styles.upiSuccessDetailValue, { color: theme.text }]}>
+                        {upiTransactionData.vpa}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.upiAutoFinalizeNote}>
+                  <ActivityIndicator size="small" color="#16a34a" style={{ marginRight: 8 }} />
+                  <Text style={styles.upiAutoFinalizeText}>Generating receipt and completing order...</Text>
+                </View>
+              </View>
+            )}
+
+            {/* FAILED / EXPIRED STATE */}
+            {(upiStatus === "FAILED" || upiStatus === "EXPIRED") && (
+              <View style={styles.upiErrorContainer}>
+                <View style={styles.upiErrorIconCircle}>
+                  <Icon name={upiStatus === "EXPIRED" ? "timer-sand" : "alert-circle-outline"} size={42} color="#ef4444" />
+                </View>
+
+                <Text style={[styles.upiErrorTitle, { color: theme.text }]}>
+                  {upiStatus === "EXPIRED" ? "Payment QR Expired" : "Payment Verification Failed"}
+                </Text>
+
+                <Text style={styles.upiErrorDesc}>
+                  {upiErrorMessage || (upiStatus === "EXPIRED" ? "This QR code timed out for security. Please generate a new QR." : "Payment could not be verified.")}
+                </Text>
+
+                <TouchableOpacity focusable={false} onPress={initiateUpiPayment} style={styles.upiRetryBtn}>
+                  <Icon name="refresh" size={18} color="#ffffff" style={{ marginRight: 6 }} />
+                  <Text style={styles.upiRetryBtnText}>Generate New QR</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity focusable={false} onPress={handleCancelUpiModal} style={styles.upiCancelBtn}>
+                  <Text style={styles.upiCancelBtnText}>Return to Checkout</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
           </View>
         </View>
       </Modal>
@@ -1705,6 +2263,378 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontWeight: "700",
     fontSize: 15,
+  },
+
+  // 🚀 AUTOMATIC UPI PAYMENT MODAL STYLES
+  upiModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
+  upiModalCard: {
+    width: "100%",
+    maxWidth: 380,
+    borderRadius: 28,
+    padding: 22,
+    alignItems: "center",
+    elevation: 25,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+  },
+  upiModalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    marginBottom: 10,
+  },
+  upiShopBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    maxWidth: "80%",
+  },
+  upiShopName: {
+    fontSize: 14,
+    fontWeight: "800",
+    marginLeft: 6,
+  },
+  upiCloseBtn: {
+    padding: 6,
+    borderRadius: 16,
+    backgroundColor: "rgba(100, 116, 139, 0.12)",
+  },
+  upiBodyContainer: {
+    alignItems: "center",
+    width: "100%",
+  },
+  upiAmountLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
+  },
+  upiAmountValue: {
+    fontSize: 32,
+    fontWeight: "900",
+    color: "#16a34a",
+    marginVertical: 4,
+  },
+  upiQrBox: {
+    width: 220,
+    height: 220,
+    borderRadius: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1.5,
+    marginVertical: 10,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    overflow: "hidden",
+  },
+  upiQrLoaderContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
+  upiQrLoaderText: {
+    marginTop: 10,
+    fontSize: 12,
+    color: "#6366f1",
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  upiQrImageWrapper: {
+    width: 190,
+    height: 190,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  upiImageSpinnerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.7)",
+  },
+  upiStatusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(22, 163, 74, 0.12)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginTop: 6,
+  },
+  upiGreenPulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#16a34a",
+    marginRight: 8,
+  },
+  upiStatusBadgeText: {
+    color: "#16a34a",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  upiScanInstruction: {
+    color: "#64748b",
+    fontSize: 12,
+    marginTop: 8,
+    textAlign: "center",
+    fontWeight: "500",
+  },
+  upiAppsRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  upiAppPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
+  },
+  upiAppPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#4f46e5",
+  },
+  upiFooterRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(100, 116, 139, 0.15)",
+  },
+  upiTimerContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  upiTimerText: {
+    fontSize: 12,
+    color: "#64748b",
+    marginLeft: 4,
+    fontWeight: "600",
+  },
+  upiCheckStatusBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
+  },
+  upiCheckStatusText: {
+    fontSize: 12,
+    color: "#6366f1",
+    fontWeight: "700",
+    marginLeft: 4,
+  },
+  upiCancelBtn: {
+    marginTop: 10,
+    paddingVertical: 10,
+    width: "100%",
+    alignItems: "center",
+  },
+  upiCancelBtnText: {
+    color: "#ef4444",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  upiAutoListeningBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "rgba(22, 163, 74, 0.25)",
+  },
+  upiAutoListeningText: {
+    fontSize: 12,
+    fontWeight: "700",
+    marginLeft: 6,
+  },
+  upiPermissionNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(217, 119, 6, 0.1)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "rgba(217, 119, 6, 0.3)",
+  },
+  upiPermissionNoticeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#d97706",
+    flex: 1,
+  },
+  upiIdBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "rgba(16, 185, 129, 0.2)",
+  },
+  upiIdBadgeText: {
+    fontSize: 12,
+    marginLeft: 6,
+  },
+  upiModeTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
+  },
+  upiModeTagText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#059669",
+    marginLeft: 4,
+  },
+
+  // SUCCESS ANIMATION STYLES
+  upiSuccessContainer: {
+    alignItems: "center",
+    width: "100%",
+    paddingVertical: 12,
+  },
+  upiSuccessCheckmarkOuter: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: "#dcfce7",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  upiSuccessCheckmarkInner: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "#16a34a",
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 8,
+    shadowColor: "#16a34a",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+  },
+  upiSuccessTitle: {
+    fontSize: 22,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  upiSuccessSubtitle: {
+    fontSize: 13,
+    color: "#16a34a",
+    fontWeight: "700",
+    marginTop: 2,
+    marginBottom: 14,
+  },
+  upiSuccessCard: {
+    width: "100%",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+  },
+  upiSuccessDetailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginVertical: 3,
+  },
+  upiSuccessDetailLabel: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+  upiSuccessDetailAmount: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#16a34a",
+  },
+  upiSuccessDetailValue: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  upiAutoFinalizeNote: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+  },
+  upiAutoFinalizeText: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+
+  // ERROR STYLES
+  upiErrorContainer: {
+    alignItems: "center",
+    width: "100%",
+    paddingVertical: 12,
+  },
+  upiErrorIconCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "#fee2e2",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  upiErrorTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  upiErrorDesc: {
+    fontSize: 13,
+    color: "#64748b",
+    textAlign: "center",
+    lineHeight: 18,
+    marginBottom: 16,
+    paddingHorizontal: 8,
+  },
+  upiRetryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#6366f1",
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 14,
+    width: "100%",
+    justifyContent: "center",
+  },
+  upiRetryBtnText: {
+    color: "#ffffff",
+    fontWeight: "700",
+    fontSize: 14,
   }
 });
 

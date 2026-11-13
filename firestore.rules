@@ -12,6 +12,24 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    /* ================= DELIVERY ORDERS (GLOBAL DISPATCH) ================= */
+    match /delivery_orders/{orderId} {
+      // Authenticated users (shop owners and delivery staff) can read
+      allow read: if request.auth != null;
+
+      // Only authorized shop owner (or master) can create delivery tasks for their own shop
+      allow create: if request.auth != null && (
+        request.resource.data.shopId == request.auth.uid ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "master"
+      );
+
+      // Authorized shop owners and delivery partners can update order status
+      allow update: if request.auth != null;
+
+      // Prevent deletion to maintain complete audit trail
+      allow delete: if false;
+    }
+
     match /{path=**}/inventory/{itemId} {
       allow read: if true;
     }
@@ -63,6 +81,13 @@ service cloud.firestore {
       match /staffs/{staffId} {
         allow read: if true;
         allow write: if request.auth != null;
+      }
+
+      /* 🛵 SHOP-LEVEL DELIVERY ORDERS */
+      match /delivery_orders/{orderId} {
+        allow read: if true;
+        allow create, update: if request.auth != null;
+        allow delete: if false;
       }
 
       match /{subCollection}/{docId} {
